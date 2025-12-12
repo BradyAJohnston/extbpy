@@ -4,6 +4,7 @@ Core builder functionality for extbpy.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import shutil
@@ -119,8 +120,6 @@ class ExtensionBuilder:
                 raise ConfigurationError("No [project] section in pyproject.toml")
 
             # Convert all tomlkit objects to standard Python types
-            import json
-
             config = json.loads(json.dumps(dict(config)))
 
             # Validate and fix project section
@@ -143,8 +142,6 @@ class ExtensionBuilder:
                 raw_lock_data = tomlkit.parse(f.read())
 
             # Convert tomlkit document to regular dict using JSON serialization
-            import json
-
             lock_data = json.loads(json.dumps(dict(raw_lock_data)))
 
             # Debug: log the structure we're getting
