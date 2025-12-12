@@ -120,8 +120,9 @@ class ExtensionBuilder:
 
             # Convert all tomlkit objects to standard Python types
             import json
+
             config = json.loads(json.dumps(dict(config)))
-            
+
             # Validate and fix project section
             project = config.get("project", {})
             if "dependencies" not in project:
@@ -143,6 +144,7 @@ class ExtensionBuilder:
 
             # Convert tomlkit document to regular dict using JSON serialization
             import json
+
             lock_data = json.loads(json.dumps(dict(raw_lock_data)))
 
             # Debug: log the structure we're getting
@@ -171,9 +173,7 @@ class ExtensionBuilder:
             logger.warning(f"Could not load uv.lock: {e}")
             return {}
 
-    def _get_all_dependencies_from_lock(
-        self, package_name: str | None = None
-    ) -> set:
+    def _get_all_dependencies_from_lock(self, package_name: str | None = None) -> set:
         """Get all transitive dependencies for a package from uv.lock.
 
         Args:
