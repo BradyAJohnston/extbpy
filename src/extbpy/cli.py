@@ -170,12 +170,13 @@ def build(
                 )
                 sys.exit(1)
 
+        additional_wheel_urls = list(wheel_url) if wheel_url else None
         builder.build(
             platforms=platform,
             clean=clean,
             split_platforms=split_platforms,
             ignore_platform_errors=ignore_platform_errors,
-            additional_urls=list(wheel_url) if wheel_url else None,
+            additional_urls=additional_wheel_urls,
         )
 
         console.print("[bold green]✅ Build completed successfully![/bold green]")
@@ -308,10 +309,11 @@ def download(
                 )
                 sys.exit(1)
 
+        additional_wheel_urls = list(wheel_url) if wheel_url else None
         builder.download_wheels(
             platforms=platform,
             clean=clean,
-            additional_urls=list(wheel_url) if wheel_url else None,
+            additional_urls=additional_wheel_urls,
         )
         console.print("[bold green]✅ Wheels downloaded successfully![/bold green]")
 

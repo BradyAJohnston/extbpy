@@ -113,12 +113,12 @@ class ExtensionBuilder:
             if "project" not in config:
                 raise ConfigurationError("No [project] section in pyproject.toml")
 
-            project = config["project"]
+            project = dict(config["project"])  # type: ignore
             if "dependencies" not in project:
                 logger.warning("No dependencies found in pyproject.toml")
-                project["dependencies"] = []
+                project["dependencies"] = []  # type: ignore
 
-            return config
+            return dict(config)  # type: ignore
 
         except FileNotFoundError:
             raise ConfigurationError(f"pyproject.toml not found: {self.pyproject_path}")
@@ -140,7 +140,8 @@ class ExtensionBuilder:
             # Count packages properly
             package_count = 0
             if "package" in lock_data:
-                package_count = len(lock_data["package"])
+                packages = lock_data.get("package", [])  # type: ignore
+                package_count = len(packages) if isinstance(packages, list) else 0
             else:
                 # Check for direct list access
                 for key, value in lock_data.items():
@@ -158,7 +159,9 @@ class ExtensionBuilder:
             logger.warning(f"Could not load uv.lock: {e}")
             return {}
 
-    def _get_all_dependencies_from_lock(self, package_name: str = None) -> set:
+    def _get_all_dependencies_from_lock(
+        self, package_name: Optional[str] = None
+    ) -> set:
         """Get all transitive dependencies for a package from uv.lock.
 
         Args:
@@ -176,11 +179,12 @@ class ExtensionBuilder:
 
         # Build a dependency graph
         dep_graph = {}
-        for package in self.lock_data.get("package", []):
-            name = package.get("name", "")
-            deps = package.get("dependencies", [])
-            dep_names = [d.get("name", "") for d in deps if isinstance(d, dict)]
-            dep_graph[name] = dep_names
+        if self.lock_data:
+            for package in self.lock_data.get("package", []):
+                name = package.get("name", "")
+                deps = package.get("dependencies", [])
+                dep_names = [d.get("name", "") for d in deps if isinstance(d, dict)]
+                dep_graph[name] = dep_names
 
         # BFS to get all transitive dependencies
         all_deps = set()
@@ -207,7 +211,7 @@ class ExtensionBuilder:
         if not self.lock_data:
             return {}
 
-        wheel_urls = {platform: [] for platform in platforms}
+        wheel_urls: Dict[str, List[str]] = {platform: [] for platform in platforms}
 
         # Get only the dependencies we need (not all packages in lock file)
         required_dependencies = self._get_all_dependencies_from_lock()
@@ -342,7 +346,7 @@ class ExtensionBuilder:
         platforms: List[str],
         clean: bool = True,
         ignore_platform_errors: bool = True,
-        additional_urls: List[str] = None,
+        additional_urls: Optional[List[str]] = None,
     ) -> List[str]:
         """Download wheels for specified platforms using uv.lock URLs and pooch."""
         self._ensure_tomlkit_available()
@@ -670,7 +674,7 @@ class ExtensionBuilder:
             )
             f.write(content)
 
-    def clean_files(self, patterns: List[str] = None) -> int:
+    def clean_files(self, patterns: Optional[List[str]] = None) -> int:
         """Clean temporary files from extension directory."""
         if patterns is None:
             patterns = [".blend1", ".MNSession"]
@@ -692,15 +696,16 @@ class ExtensionBuilder:
     def _find_blender_executable(self) -> str:
         """Find Blender executable."""
         try:
-            import bpy
+            import bpy  # type: ignore
 
             return bpy.app.binary_path
         except ImportError:
             # Try to find Blender in PATH
             blender_names = ["blender", "blender.exe"]
             for name in blender_names:
-                if shutil.which(name):
-                    return shutil.which(name)
+                blender_path = shutil.which(name)
+                if blender_path:
+                    return blender_path
 
             raise BlenderError(
                 "Blender executable not found. Please ensure Blender is installed "
@@ -748,7 +753,7 @@ class ExtensionBuilder:
         clean: bool = True,
         split_platforms: bool = True,
         ignore_platform_errors: bool = True,
-        additional_urls: List[str] = None,
+        additional_urls: Optional[List[str]] = None,
     ) -> None:
         """Complete build process: download wheels, update manifest, and build extension."""
         logger.info(f"Starting build for platforms: {', '.join(platforms)}")

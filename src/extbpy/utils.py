@@ -22,7 +22,7 @@ def validate_python_version(min_version: str = "3.11") -> bool:
     return current >= minimum
 
 
-def find_project_root(start_path: Path = None) -> Optional[Path]:
+def find_project_root(start_path: Optional[Path] = None) -> Optional[Path]:
     """Find the project root by looking for pyproject.toml."""
     if start_path is None:
         start_path = Path.cwd()
@@ -67,12 +67,13 @@ def format_file_size(size_bytes: int) -> str:
 
     size_names = ["B", "KB", "MB", "GB"]
     i = 0
+    size_float = float(size_bytes)
 
-    while size_bytes >= 1024.0 and i < len(size_names) - 1:
-        size_bytes /= 1024.0
+    while size_float >= 1024.0 and i < len(size_names) - 1:
+        size_float = size_float / 1024.0
         i += 1
 
-    return f"{size_bytes:.1f}{size_names[i]}"
+    return f"{size_float:.1f}{size_names[i]}"
 
 
 def get_wheel_info(wheel_path: Path) -> Dict[str, Any]:
