@@ -177,7 +177,7 @@ class ExtensionBuilder:
                         all_deps.add(dep)
                         to_visit.append(dep)
         
-        logger.info(f"Resolved {len(all_deps)} dependencies for {package_name}")
+        logger.debug(f"Resolved {len(all_deps)} dependencies for {package_name}")
         return all_deps
 
     def _get_wheel_urls_from_lock(self, platforms: List[str]) -> Dict[str, List[str]]:
@@ -193,13 +193,15 @@ class ExtensionBuilder:
         
         # Filter out excluded packages
         if self.excluded_packages:
+            excluded_count = len(required_dependencies & self.excluded_packages)
             required_dependencies = required_dependencies - self.excluded_packages
-            logger.info(f"After exclusions: {len(required_dependencies)} packages to download")
+            if excluded_count > 0:
+                logger.debug(f"Excluded {excluded_count} packages already available in Blender")
         
         packages = self.lock_data.get('package', [])
         
-        logger.info(f"Found {len(packages)} packages in uv.lock")
-        logger.info(f"Need wheels for {len(required_dependencies)} dependencies")
+        logger.debug(f"Found {len(packages)} packages in uv.lock")
+        logger.info(f"Resolving wheels for {len(required_dependencies)} dependencies")
         
         wheel_count = 0
         matched_wheels = 0
@@ -235,10 +237,10 @@ class ExtensionBuilder:
                         wheel_urls[matched_platform].append(wheel_url)
                         matched_wheels += 1
         
-        logger.info(f"Processed {wheel_count} total wheels, {matched_wheels} matched our platforms")
+        logger.debug(f"Processed {wheel_count} total wheels, {matched_wheels} matched our platforms")
         
         for platform in platforms:
-            logger.info(f"Platform {platform}: {len(wheel_urls[platform])} wheels found")
+            logger.debug(f"Platform {platform}: {len(wheel_urls[platform])} wheels found")
         
         return wheel_urls
     
@@ -324,25 +326,38 @@ class ExtensionBuilder:
             for platform in platforms:
                 wheel_urls[platform].extend(additional_urls)
         
-        failed_platforms = []
-        successful_platforms = []
+        # Collect all unique wheel URLs across all platforms to avoid duplicates
+        all_wheel_urls = set()
+        platform_wheel_counts = {}
         
         for platform in platforms:
             platform_urls = wheel_urls.get(platform, [])
+            platform_wheel_counts[platform] = len(platform_urls)
             
             if not platform_urls:
                 logger.warning(f"No wheels found in uv.lock for platform: {platform}")
-                failed_platforms.append(platform)
-                continue
+            else:
+                all_wheel_urls.update(platform_urls)
+        
+        # Check if we have any platforms with wheels
+        platforms_with_wheels = [p for p in platforms if platform_wheel_counts[p] > 0]
+        failed_platforms = [p for p in platforms if platform_wheel_counts[p] == 0]
+        
+        if not platforms_with_wheels:
+            logger.error("No wheels found for any requested platforms")
+        else:
+            # Log summary of wheel counts
+            total_needed = sum(platform_wheel_counts[p] for p in platforms_with_wheels)
+            platform_summary = ", ".join(f"{p}:{platform_wheel_counts[p]}" for p in platforms_with_wheels)
+            logger.info(f"Wheels needed: {platform_summary} (total: {total_needed}, unique: {len(all_wheel_urls)})")
             
-            logger.info(f"Downloading {len(platform_urls)} wheels for {platform}...")
-            
+            # Download all unique wheels once
             try:
-                self._download_wheels_multithreaded(platform_urls, platform)
-                successful_platforms.append(platform)
+                self._download_wheels_multithreaded(list(all_wheel_urls), f"{len(platforms_with_wheels)} platforms")
+                successful_platforms = platforms_with_wheels
             except Exception as e:
-                failed_platforms.append(platform)
-                logger.error(f"❌ Failed to download wheels for {platform}: {e}")
+                failed_platforms.extend(platforms_with_wheels)
+                logger.error(f"❌ Failed to download wheels: {e}")
                 
         if failed_platforms and not successful_platforms:
             raise DependencyError(f"Failed to download wheels for all platforms: {', '.join(failed_platforms)}")
@@ -396,17 +411,16 @@ class ExtensionBuilder:
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TextColumn("({task.completed}/{task.total})"),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
             console=None  # Use default console
         ) as progress:
             
-            # Create progress task
-            task_id = progress.add_task(
-                f"[cyan]Downloading wheels for {platform}[/cyan]", 
-                total=len(urls)
-            )
+            # Create progress task  
+            if "platforms" in platform:
+                description = f"[cyan]Downloading {len(urls)} unique wheels for {platform}[/cyan]"
+            else:
+                description = f"[cyan]Downloading wheels for {platform}[/cyan]"
+                
+            task_id = progress.add_task(description, total=len(urls))
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all download tasks
@@ -430,7 +444,10 @@ class ExtensionBuilder:
             logger.warning(f"Download completed: {success_count} succeeded, {failed_count} failed")
             raise DependencyError(f"{failed_count} wheels failed to download")
         else:
-            logger.info(f"✅ Successfully downloaded {success_count} wheels for {platform}")
+            if "platforms" in platform:
+                logger.info(f"✅ Successfully downloaded {success_count} unique wheels for {platform}")
+            else:
+                logger.info(f"✅ Successfully downloaded {success_count} wheels for {platform}")
     
     def _download_wheels_with_pip(
         self, 
@@ -522,7 +539,10 @@ class ExtensionBuilder:
             whl_path.unlink()
             logger.debug(f"Removed excluded wheel: {whl_path.name}")
         
-        logger.info(f"Keeping {len(to_keep)} wheels, removed {len(to_remove)} excluded wheels")
+        if len(to_remove) > 0:
+            logger.info(f"Excluded {len(to_remove)} wheels already available in Blender, keeping {len(to_keep)}")
+        else:
+            logger.debug(f"Keeping all {len(to_keep)} wheels")
         return to_keep
     
     def update_manifest(self, platforms: List[str]) -> None:
@@ -546,7 +566,7 @@ class ExtensionBuilder:
         platform_names = [p.metadata for p in platform_objects]
         manifest["platforms"] = platform_names
         
-        logger.info(f"Updated manifest with {len(wheel_paths)} wheels for platforms: {', '.join(platform_names)}")
+        logger.debug(f"Updated manifest with {len(wheel_paths)} wheels for platforms: {', '.join(platform_names)}")
         
         # Write updated manifest with nice formatting
         with open(self.manifest_path, 'w', encoding='utf-8') as f:
@@ -574,7 +594,8 @@ class ExtensionBuilder:
                     logger.debug(f"Removed: {file_path}")
                     cleaned_count += 1
         
-        logger.info(f"Cleaned {cleaned_count} temporary files")
+        if cleaned_count > 0:
+            logger.debug(f"Cleaned {cleaned_count} temporary files")
         return cleaned_count
     
     def _find_blender_executable(self) -> str:
@@ -658,7 +679,15 @@ class ExtensionBuilder:
             # Build the extension
             self.build_extension(split_platforms=split_platforms)
             
-            logger.info(f"Build completed successfully for platforms: {', '.join(successful_platforms)}")
+            # Look for created extension files
+            extension_files = list(self.output_dir.glob("*.zip"))
+            if extension_files:
+                logger.info(f"✅ Built {len(extension_files)} extension packages:")
+                for ext_file in extension_files:
+                    size_mb = ext_file.stat().st_size / (1024 * 1024)
+                    logger.info(f"  📦 {ext_file.name} ({size_mb:.1f} MB)")
+            else:
+                logger.info(f"Build completed successfully for platforms: {', '.join(successful_platforms)}")
             
         except Exception as e:
             logger.error(f"Build failed: {e}")
