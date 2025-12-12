@@ -38,7 +38,7 @@ def setup_logging(verbose: bool = False) -> None:
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
     """
-    🔧 extbpy - Build Blender extensions with Python dependencies
+    extbpy - Build Blender extensions with Python dependencies
 
     A minimal tool for building Blender extensions that include Python packages
     as wheels, with cross-platform support and intelligent dependency management.
@@ -115,7 +115,7 @@ def build(
     wheel_url: list[str],
 ) -> None:
     """
-    🏗️  Build a Blender extension with Python dependencies
+    Build a Blender extension with Python dependencies
 
     Downloads Python wheels for specified platforms and builds the extension.
     If no platforms are specified, builds for the current platform.
@@ -180,13 +180,13 @@ def build(
             additional_urls=additional_wheel_urls,
         )
 
-        console.print("[bold green]✅ Build completed successfully![/bold green]")
+        console.print("[bold green]Build completed successfully![/bold green]")
 
     except ExtbpyError as e:
-        console.print(f"[bold red]❌ Build failed:[/bold red] {e}")
+        console.print(f"[bold red]Build failed:[/bold red] {e}")
         sys.exit(1)
     except Exception as e:
-        console.print(f"[bold red]❌ Unexpected error:[/bold red] {e}")
+        console.print(f"[bold red]Unexpected error:[/bold red] {e}")
         if logging.getLogger().level <= logging.DEBUG:
             console.print_exception()
         sys.exit(1)
@@ -209,7 +209,7 @@ def build(
 )
 def clean(source_dir: Path, pattern: list[str]) -> None:
     """
-    🧹 Clean temporary files from extension directory
+    Clean temporary files from extension directory
 
     Removes temporary files like .blend1 and .MNSession files.
     """
@@ -218,12 +218,12 @@ def clean(source_dir: Path, pattern: list[str]) -> None:
         cleaned_count = builder.clean_files(patterns=pattern)
 
         if cleaned_count > 0:
-            console.print(f"[bold green]✅ Cleaned {cleaned_count} files[/bold green]")
+            console.print(f"[bold green]Cleaned {cleaned_count} files[/bold green]")
         else:
             console.print("[yellow]No files to clean[/yellow]")
 
     except ExtbpyError as e:
-        console.print(f"[bold red]❌ Clean failed:[/bold red] {e}")
+        console.print(f"[bold red]Clean failed:[/bold red] {e}")
         sys.exit(1)
 
 
@@ -261,7 +261,7 @@ def download(
     wheel_url: list[str],
 ) -> None:
     """
-    📦 Download Python wheels for specified platforms
+    Download Python wheels for specified platforms
 
     Downloads wheels without building the extension.
     """
@@ -316,10 +316,10 @@ def download(
             clean=clean,
             additional_urls=additional_wheel_urls,
         )
-        console.print("[bold green]✅ Wheels downloaded successfully![/bold green]")
+        console.print("[bold green]Wheels downloaded successfully![/bold green]")
 
     except ExtbpyError as e:
-        console.print(f"[bold red]❌ Download failed:[/bold red] {e}")
+        console.print(f"[bold red]Download failed:[/bold red] {e}")
         sys.exit(1)
 
 
@@ -343,7 +343,7 @@ def download(
 )
 def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
     """
-    🌐 Download wheels from specific URLs
+    Download wheels from specific URLs
 
     Downloads wheels directly from provided URLs without platform resolution.
     """
@@ -361,10 +361,10 @@ def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
         # Download all URLs (treat as universal)
         builder._download_wheels_multithreaded(list(url), "universal")
 
-        console.print("[bold green]✅ Wheels downloaded successfully![/bold green]")
+        console.print("[bold green]Wheels downloaded successfully![/bold green]")
 
     except ExtbpyError as e:
-        console.print(f"[bold red]❌ Download failed:[/bold red] {e}")
+        console.print(f"[bold red]Download failed:[/bold red] {e}")
         sys.exit(1)
 
 
@@ -378,7 +378,7 @@ def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
 )
 def info(source_dir: Path) -> None:
     """
-    📋 Show information about the extension project
+    Show information about the extension project
 
     Displays project metadata, dependencies, and configuration.
     """
@@ -386,7 +386,7 @@ def info(source_dir: Path) -> None:
         builder = ExtensionBuilder(source_dir=source_dir)
         info_data = builder.get_project_info()
 
-        console.print("[bold blue]📋 Project Information[/bold blue]")
+        console.print("[bold blue]Project Information[/bold blue]")
         console.print(f"Name: [bold]{info_data.get('name', 'Unknown')}[/bold]")
         console.print(f"Version: [bold]{info_data.get('version', 'Unknown')}[/bold]")
         console.print(f"Description: {info_data.get('description', 'No description')}")
@@ -395,7 +395,7 @@ def info(source_dir: Path) -> None:
         configured_platforms = info_data.get("configured_platforms", [])
         if configured_platforms:
             console.print(
-                f"\n[bold blue]🎯 Configured Platforms ({len(configured_platforms)}):[/bold blue]"
+                f"\n[bold blue]Configured Platforms ({len(configured_platforms)}):[/bold blue]"
             )
             for platform in configured_platforms:
                 console.print(f"  • {platform}")
@@ -406,14 +406,14 @@ def info(source_dir: Path) -> None:
 
         deps = info_data.get("dependencies", [])
         if deps:
-            console.print(f"\n[bold blue]📦 Dependencies ({len(deps)}):[/bold blue]")
+            console.print(f"\n[bold blue]Dependencies ({len(deps)}):[/bold blue]")
             for dep in deps:
                 console.print(f"  • {dep}")
         else:
             console.print("\n[yellow]No dependencies found[/yellow]")
 
     except ExtbpyError as e:
-        console.print(f"[bold red]❌ Info failed:[/bold red] {e}")
+        console.print(f"[bold red]Info failed:[/bold red] {e}")
         sys.exit(1)
 
 
