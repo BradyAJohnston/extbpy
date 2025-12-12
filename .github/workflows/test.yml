@@ -26,15 +26,6 @@ jobs:
       run: |
         uv sync --all-extras
     
-    - name: Run linting
-      run: |
-        uv run ruff check src/ tests/
-        uv run ruff format --check src/ tests/
-    
-    - name: Run type checking
-      run: |
-        uv run mypy src/extbpy
-    
     - name: Run tests
       run: |
         uv run pytest tests/ -v --tb=short

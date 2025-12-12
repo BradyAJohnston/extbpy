@@ -13,24 +13,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  test:
     runs-on: macos-latest
+    
     steps:
     - uses: actions/checkout@v4
     
     - name: Install uv
       uses: astral-sh/setup-uv@v3
       with:
+        version: "latest"
         enable-cache: true
-    
+        
     - name: Install dependencies
-      run: uv sync --dev
+      run: |
+        uv sync --all-extras
     
-    - name: Check formatting
-      run: uv run ruff format --check .
-    
-    - name: Run linter
-      run: uv run ruff check .
+    - name: Run linting
+      run: |
+        uv run ruff check src/ tests/
+        uv run ruff format --check src/ tests/
     
     - name: Run type checking
-      run: uv run mypy src/extbpy
+      run: |
+        uv run mypy src/extbpy
