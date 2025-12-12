@@ -161,6 +161,7 @@ dependencies = [
     { name = "packaging" },
     { name = "pip" },
     { name = "rich" },
+    { name = "ruff" },
     { name = "tomlkit" },
 ]
 
@@ -183,6 +184,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "rich", specifier = ">=13.0.0" },
+    { name = "ruff", specifier = ">=0.14.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "tomlkit", specifier = ">=0.11.0" },
 ]

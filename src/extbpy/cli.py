@@ -67,6 +67,8 @@ def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
               help='Exclude specific packages from wheels (can be specified multiple times)')
 @click.option('--ignore-platform-errors/--fail-on-platform-errors', default=True,
               help='Continue building even if some platforms fail (default: true)')
+@click.option('--wheel-url', multiple=True,
+              help='Additional wheel URLs to download (can be specified multiple times)')
 def build(
     source_dir: Path,
     output_dir: Path, 
@@ -75,7 +77,8 @@ def build(
     clean: bool,
     split_platforms: bool,
     exclude_package: List[str],
-    ignore_platform_errors: bool
+    ignore_platform_errors: bool,
+    wheel_url: List[str]
 ) -> None:
     """
     🏗️  Build a Blender extension with Python dependencies
@@ -106,7 +109,8 @@ def build(
             platforms=platform,
             clean=clean,
             split_platforms=split_platforms,
-            ignore_platform_errors=ignore_platform_errors
+            ignore_platform_errors=ignore_platform_errors,
+            additional_urls=list(wheel_url) if wheel_url else None
         )
         
         console.print("[bold green]✅ Build completed successfully![/bold green]")
@@ -154,11 +158,14 @@ def clean(source_dir: Path, pattern: List[str]) -> None:
               help='Python version for dependency resolution')
 @click.option('--clean/--no-clean', default=True,
               help='Clean wheel directory before downloading')
+@click.option('--wheel-url', multiple=True,
+              help='Additional wheel URLs to download (can be specified multiple times)')
 def download(
     source_dir: Path,
     platform: List[str], 
     python_version: str,
-    clean: bool
+    clean: bool,
+    wheel_url: List[str]
 ) -> None:
     """
     📦 Download Python wheels for specified platforms
@@ -181,7 +188,48 @@ def download(
             console.print("[yellow]No platforms specified, detecting current platform...[/yellow]")
             platform = builder.detect_current_platform()
         
-        builder.download_wheels(platforms=platform, clean=clean)
+        builder.download_wheels(
+            platforms=platform, 
+            clean=clean,
+            additional_urls=list(wheel_url) if wheel_url else None
+        )
+        console.print("[bold green]✅ Wheels downloaded successfully![/bold green]")
+        
+    except ExtbpyError as e:
+        console.print(f"[bold red]❌ Download failed:[/bold red] {e}")
+        sys.exit(1)
+
+@cli.command()
+@click.option('--source-dir', '-s', type=click.Path(exists=True, path_type=Path),
+              default=Path.cwd(), help='Source directory containing extension')
+@click.option('--url', '-u', multiple=True, required=True,
+              help='Wheel URLs to download (can be specified multiple times)')
+@click.option('--clean/--no-clean', default=True,
+              help='Clean wheel directory before downloading')
+def download_urls(
+    source_dir: Path,
+    url: List[str],
+    clean: bool
+) -> None:
+    """
+    🌐 Download wheels from specific URLs
+    
+    Downloads wheels directly from provided URLs without platform resolution.
+    """
+    try:
+        builder = ExtensionBuilder(source_dir=source_dir)
+        
+        # Create wheels directory
+        builder.wheels_dir.mkdir(parents=True, exist_ok=True)
+        
+        if clean:
+            builder._clean_wheels_dir()
+        
+        console.print(f"[blue]Downloading {len(url)} wheels from URLs...[/blue]")
+        
+        # Download all URLs (treat as universal)
+        builder._download_wheels_multithreaded(list(url), "universal")
+        
         console.print("[bold green]✅ Wheels downloaded successfully![/bold green]")
         
     except ExtbpyError as e:
