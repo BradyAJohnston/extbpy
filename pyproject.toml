@@ -1,0 +1,49 @@
+[project]
+name = "extbpy"
+version = "0.1.0"
+description = "A powerful CLI tool for building Blender extensions with Python dependencies"
+readme = "README.md"
+authors = [
+    { name = "Brady Johnston", email = "brady.johnston@me.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "tomlkit>=0.11.0",
+    "packaging>=21.0",
+    "pip>=25.3",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: Software Development :: Build Tools",
+]
+keywords = ["blender", "extension", "addon", "build", "wheels"]
+
+[project.urls]
+Homepage = "https://github.com/bradyjohnston/extbpy"
+Repository = "https://github.com/bradyajohnston/extbpy"
+Issues = "https://github.com/bradyajohnston/extbpy/issues"
+
+[project.scripts]
+extbpy = "extbpy.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
