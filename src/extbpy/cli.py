@@ -2,9 +2,10 @@
 CLI interface for extbpy - Blender Extension Builder.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
-from typing import List
 import click
 from rich.console import Console
 from rich.logging import RichHandler
@@ -105,13 +106,13 @@ def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
 def build(
     source_dir: Path,
     output_dir: Path,
-    platform: List[str],
+    platform: list[str],
     python_version: str,
     clean: bool,
     split_platforms: bool,
-    exclude_package: List[str],
+    exclude_package: list[str],
     ignore_platform_errors: bool,
-    wheel_url: List[str],
+    wheel_url: list[str],
 ) -> None:
     """
     🏗️  Build a Blender extension with Python dependencies
@@ -206,7 +207,7 @@ def build(
     default=[".blend1", ".MNSession"],
     help="File patterns to clean (can be specified multiple times)",
 )
-def clean(source_dir: Path, pattern: List[str]) -> None:
+def clean(source_dir: Path, pattern: list[str]) -> None:
     """
     🧹 Clean temporary files from extension directory
 
@@ -254,10 +255,10 @@ def clean(source_dir: Path, pattern: List[str]) -> None:
 )
 def download(
     source_dir: Path,
-    platform: List[str],
+    platform: list[str],
     python_version: str,
     clean: bool,
-    wheel_url: List[str],
+    wheel_url: list[str],
 ) -> None:
     """
     📦 Download Python wheels for specified platforms
@@ -340,7 +341,7 @@ def download(
 @click.option(
     "--clean/--no-clean", default=True, help="Clean wheel directory before downloading"
 )
-def download_urls(source_dir: Path, url: List[str], clean: bool) -> None:
+def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
     """
     🌐 Download wheels from specific URLs
 

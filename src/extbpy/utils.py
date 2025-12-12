@@ -2,10 +2,12 @@
 Utility functions for extbpy.
 """
 
+from __future__ import annotations
+
 import sys
-from pathlib import Path
-from typing import Optional, Dict, Any
 import logging
+from pathlib import Path
+from typing import Any
 
 from .exceptions import ConfigurationError
 
@@ -22,7 +24,7 @@ def validate_python_version(min_version: str = "3.11") -> bool:
     return current >= minimum
 
 
-def find_project_root(start_path: Optional[Path] = None) -> Optional[Path]:
+def find_project_root(start_path: Path | None = None) -> Path | None:
     """Find the project root by looking for pyproject.toml."""
     if start_path is None:
         start_path = Path.cwd()
@@ -76,7 +78,7 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_float:.1f}{size_names[i]}"
 
 
-def get_wheel_info(wheel_path: Path) -> Dict[str, Any]:
+def get_wheel_info(wheel_path: Path) -> dict[str, Any]:
     """Extract basic information from a wheel filename."""
     name = wheel_path.name
     parts = name.replace(".whl", "").split("-")

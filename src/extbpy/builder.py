@@ -2,12 +2,14 @@
 Core builder functionality for extbpy.
 """
 
+from __future__ import annotations
+
 import subprocess
 import sys
 import shutil
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Set, Optional
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
 import tomlkit
@@ -41,9 +43,9 @@ class ExtensionBuilder:
     def __init__(
         self,
         source_dir: Path,
-        output_dir: Optional[Path] = None,
+        output_dir: Path | None = None,
         python_version: str = "3.11",
-        excluded_packages: Optional[Set[str]] = None,
+        excluded_packages: set[str] | None = None,
     ):
         self.source_dir = Path(source_dir).resolve()
         self.output_dir = Path(output_dir or Path.cwd()).resolve()
@@ -103,44 +105,54 @@ class ExtensionBuilder:
             "Expected a directory containing blender_manifest.toml"
         )
 
-    def _load_project_config(self) -> Dict[str, Any]:
+    def _load_project_config(self) -> dict[str, Any]:
         """Load and validate project configuration."""
         try:
             with open(self.pyproject_path, "r", encoding="utf-8") as f:
-                config = tomlkit.parse(f.read())
+                raw_config = tomlkit.parse(f.read())
+
+            # Convert tomlkit document to regular dict to avoid type issues
+            config = dict(raw_config)
 
             # Validate required sections
             if "project" not in config:
                 raise ConfigurationError("No [project] section in pyproject.toml")
 
-            project = dict(config["project"])  # type: ignore
+            # Convert all tomlkit objects to standard Python types
+            import json
+            config = json.loads(json.dumps(dict(config)))
+            
+            # Validate and fix project section
+            project = config.get("project", {})
             if "dependencies" not in project:
                 logger.warning("No dependencies found in pyproject.toml")
-                project["dependencies"] = []  # type: ignore
-
-            return dict(config)  # type: ignore
+                project["dependencies"] = []
+                config["project"] = project
+            return config
 
         except FileNotFoundError:
             raise ConfigurationError(f"pyproject.toml not found: {self.pyproject_path}")
         except Exception as e:
             raise ConfigurationError(f"Error reading pyproject.toml: {e}")
 
-    def _load_uv_lock(self) -> Dict[str, Any]:
+    def _load_uv_lock(self) -> dict[str, Any]:
         """Load and parse uv.lock file."""
         try:
             with open(self.uv_lock_path, "r", encoding="utf-8") as f:
-                lock_data = tomlkit.parse(f.read())
+                raw_lock_data = tomlkit.parse(f.read())
+
+            # Convert tomlkit document to regular dict using JSON serialization
+            import json
+            lock_data = json.loads(json.dumps(dict(raw_lock_data)))
 
             # Debug: log the structure we're getting
             logger.debug(f"Lock data type: {type(lock_data)}")
-            logger.debug(
-                f"Lock data keys: {list(lock_data.keys()) if hasattr(lock_data, 'keys') else 'Not a dict'}"
-            )
+            logger.debug(f"Lock data keys: {list(lock_data.keys())}")
 
             # Count packages properly
             package_count = 0
             if "package" in lock_data:
-                packages = lock_data.get("package", [])  # type: ignore
+                packages = lock_data.get("package", [])
                 package_count = len(packages) if isinstance(packages, list) else 0
             else:
                 # Check for direct list access
@@ -160,7 +172,7 @@ class ExtensionBuilder:
             return {}
 
     def _get_all_dependencies_from_lock(
-        self, package_name: Optional[str] = None
+        self, package_name: str | None = None
     ) -> set:
         """Get all transitive dependencies for a package from uv.lock.
 
@@ -171,7 +183,8 @@ class ExtensionBuilder:
             A set of all package names (including transitive dependencies)
         """
         if package_name is None:
-            package_name = self.project_config["project"].get("name", "")
+            project_section = self.project_config.get("project", {})
+            package_name = project_section.get("name", "")
 
         if not package_name:
             logger.warning("No package name provided and none found in project config")
@@ -180,7 +193,8 @@ class ExtensionBuilder:
         # Build a dependency graph
         dep_graph = {}
         if self.lock_data:
-            for package in self.lock_data.get("package", []):
+            packages = self.lock_data.get("package", [])
+            for package in packages:
                 name = package.get("name", "")
                 deps = package.get("dependencies", [])
                 dep_names = [d.get("name", "") for d in deps if isinstance(d, dict)]
@@ -206,12 +220,12 @@ class ExtensionBuilder:
         logger.debug(f"Resolved {len(all_deps)} dependencies for {package_name}")
         return all_deps
 
-    def _get_wheel_urls_from_lock(self, platforms: List[str]) -> Dict[str, List[str]]:
+    def _get_wheel_urls_from_lock(self, platforms: list[str]) -> dict[str, list[str]]:
         """Extract wheel URLs from uv.lock for specified platforms."""
         if not self.lock_data:
             return {}
 
-        wheel_urls: Dict[str, List[str]] = {platform: [] for platform in platforms}
+        wheel_urls: dict[str, list[str]] = {platform: [] for platform in platforms}
 
         # Get only the dependencies we need (not all packages in lock file)
         required_dependencies = self._get_all_dependencies_from_lock()
@@ -275,7 +289,7 @@ class ExtensionBuilder:
 
         return wheel_urls
 
-    def get_configured_platforms(self) -> List[str]:
+    def get_configured_platforms(self) -> list[str]:
         """Get platforms configured in pyproject.toml."""
         tool_config = self.project_config.get("tool", {})
         extbpy_config = tool_config.get("extbpy", {})
@@ -292,7 +306,7 @@ class ExtensionBuilder:
 
         return platforms
 
-    def get_project_info(self) -> Dict[str, Any]:
+    def get_project_info(self) -> dict[str, Any]:
         """Get project information for display."""
         project = self.project_config.get("project", {})
         configured_platforms = self.get_configured_platforms()
@@ -307,11 +321,11 @@ class ExtensionBuilder:
             "wheels_dir": str(self.wheels_dir),
         }
 
-    def detect_current_platform(self) -> List[str]:
+    def detect_current_platform(self) -> list[str]:
         """Detect current platform."""
         return detect_current_platform()
 
-    def _run_python_command(self, args: List[str]) -> None:
+    def _run_python_command(self, args: list[str]) -> None:
         """Run a Python command with proper error handling."""
         python_exe = sys.executable
         cmd = [python_exe] + args
@@ -343,11 +357,11 @@ class ExtensionBuilder:
 
     def download_wheels(
         self,
-        platforms: List[str],
+        platforms: list[str],
         clean: bool = True,
         ignore_platform_errors: bool = True,
-        additional_urls: Optional[List[str]] = None,
-    ) -> List[str]:
+        additional_urls: list[str] | None = None,
+    ) -> list[str]:
         """Download wheels for specified platforms using uv.lock URLs and pooch."""
         self._ensure_tomlkit_available()
 
@@ -436,7 +450,7 @@ class ExtensionBuilder:
         return successful_platforms
 
     def _download_wheels_multithreaded(
-        self, urls: List[str], platform: str, max_workers: int = 8
+        self, urls: list[str], platform: str, max_workers: int = 8
     ) -> None:
         """Download wheels using multithreaded urllib from provided URLs with progress bar."""
         if not urls:
@@ -528,15 +542,16 @@ class ExtensionBuilder:
 
     def _download_wheels_with_pip(
         self,
-        platforms: List[str],
+        platforms: list[str],
         clean: bool = True,
         ignore_platform_errors: bool = True,
-    ) -> List[str]:
+    ) -> list[str]:
         """Fallback method: download wheels using pip (original implementation)."""
         logger.info("No uv.lock found, falling back to pip download...")
 
         platform_objects = get_platforms(platforms)
-        dependencies = self.project_config["project"]["dependencies"]
+        project_section = self.project_config.get("project", {})
+        dependencies = project_section.get("dependencies", [])
 
         if not dependencies:
             logger.warning("No dependencies to download")
@@ -604,7 +619,7 @@ class ExtensionBuilder:
         self.wheels_dir.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Cleaned wheels directory: {self.wheels_dir}")
 
-    def _filter_wheels(self) -> List[Path]:
+    def _filter_wheels(self) -> list[Path]:
         """Filter out excluded packages from wheels."""
         wheel_files = list(self.wheels_dir.glob("*.whl"))
         wheel_files.sort()
@@ -637,7 +652,7 @@ class ExtensionBuilder:
             logger.debug(f"Keeping all {len(to_keep)} wheels")
         return to_keep
 
-    def update_manifest(self, platforms: List[str]) -> None:
+    def update_manifest(self, platforms: list[str]) -> None:
         """Update the Blender manifest with wheels and platform info."""
         platform_objects = get_platforms(platforms)
         wheel_files = self._filter_wheels()
@@ -674,7 +689,7 @@ class ExtensionBuilder:
             )
             f.write(content)
 
-    def clean_files(self, patterns: Optional[List[str]] = None) -> int:
+    def clean_files(self, patterns: list[str] | None = None) -> int:
         """Clean temporary files from extension directory."""
         if patterns is None:
             patterns = [".blend1", ".MNSession"]
@@ -749,11 +764,11 @@ class ExtensionBuilder:
 
     def build(
         self,
-        platforms: List[str],
+        platforms: list[str],
         clean: bool = True,
         split_platforms: bool = True,
         ignore_platform_errors: bool = True,
-        additional_urls: Optional[List[str]] = None,
+        additional_urls: list[str] | None = None,
     ) -> None:
         """Complete build process: download wheels, update manifest, and build extension."""
         logger.info(f"Starting build for platforms: {', '.join(platforms)}")

@@ -2,9 +2,10 @@
 Platform definitions and utilities for extbpy.
 """
 
+from __future__ import annotations
+
 import platform
 from dataclasses import dataclass
-from typing import List
 
 from .exceptions import PlatformError
 
@@ -54,12 +55,12 @@ def get_platform(name: str) -> Platform:
     return PLATFORMS[name]
 
 
-def get_platforms(names: List[str]) -> List[Platform]:
+def get_platforms(names: list[str]) -> list[Platform]:
     """Get multiple platforms by name."""
     return [get_platform(name) for name in names]
 
 
-def detect_current_platform() -> List[str]:
+def detect_current_platform() -> list[str]:
     """Detect the current platform."""
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -83,12 +84,12 @@ def detect_current_platform() -> List[str]:
         raise PlatformError(f"Unsupported operating system: {system}")
 
 
-def list_available_platforms() -> List[str]:
+def list_available_platforms() -> list[str]:
     """List all available platform names."""
     return list(PLATFORMS.keys())
 
 
-def match_wheel_to_platforms(filename: str) -> List[str]:
+def match_wheel_to_platforms(filename: str) -> list[str]:
     """Match a wheel filename to supported platforms using Blender's matching logic."""
     matched_platforms = []
 
