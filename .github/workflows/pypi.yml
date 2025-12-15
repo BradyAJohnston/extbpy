@@ -13,7 +13,7 @@ concurrency:
 jobs:
     pypi-publish:
       name: Upload release to PyPI
-      runs-on: macos-latest
+      runs-on: ubuntu-latest
       environment:
         name: pypi
         url: https://pypi.org/p/extbpy
