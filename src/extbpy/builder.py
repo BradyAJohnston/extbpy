@@ -47,6 +47,7 @@ class ExtensionBuilder:
         output_dir: Path | None = None,
         python_version: str = "3.11",
         excluded_packages: set[str] | None = None,
+        custom_extension_paths: list[Path] | None = None,
     ):
         self.source_dir = Path(source_dir).resolve()
         self.output_dir = Path(output_dir or Path.cwd()).resolve()
@@ -60,6 +61,7 @@ class ExtensionBuilder:
             "requests",
             "urllib3",
         }
+        self.custom_extension_paths = custom_extension_paths or []
 
         # Validate source directory structure
         self._validate_source_dir()
@@ -88,22 +90,53 @@ class ExtensionBuilder:
 
     def _find_extension_dir(self) -> Path:
         """Find the extension directory within source directory."""
-        # Look for directories with blender_manifest.toml
+        # First check custom extension paths
+        for custom_path in self.custom_extension_paths:
+            if custom_path.is_absolute():
+                candidate = custom_path
+            else:
+                candidate = self.source_dir / custom_path
+            
+            if candidate.exists() and candidate.is_dir():
+                manifest_path = candidate / "blender_manifest.toml"
+                if manifest_path.exists():
+                    logger.debug(f"Found extension in custom path: {candidate}")
+                    return candidate
+
+        # Check src directory first (common for Python packages)
+        src_dir = self.source_dir / "src"
+        if src_dir.exists():
+            for item in src_dir.iterdir():
+                if item.is_dir():
+                    manifest_path = item / "blender_manifest.toml"
+                    if manifest_path.exists():
+                        logger.debug(f"Found extension in src directory: {item}")
+                        return item
+
+        # Look for directories with blender_manifest.toml in source directory
         for item in self.source_dir.iterdir():
             if item.is_dir():
                 manifest_path = item / "blender_manifest.toml"
                 if manifest_path.exists():
+                    logger.debug(f"Found extension in source directory: {item}")
                     return item
 
         # Fallback: look for common extension directory names
-        for name in ["extension", "addon", "warbler"]:
-            candidate = self.source_dir / name
-            if candidate.exists() and candidate.is_dir():
-                return candidate
+        search_dirs = [self.source_dir]
+        if src_dir.exists():
+            search_dirs.append(src_dir)
+            
+        for search_dir in search_dirs:
+            for name in ["extension", "addon", "warbler"]:
+                candidate = search_dir / name
+                if candidate.exists() and candidate.is_dir():
+                    logger.debug(f"Found extension by name convention: {candidate}")
+                    return candidate
 
         raise ConfigurationError(
             f"No extension directory found in {self.source_dir}. "
-            "Expected a directory containing blender_manifest.toml"
+            "Expected a directory containing blender_manifest.toml. "
+            "Searched in source directory, src/ subdirectory, and custom paths."
         )
 
     def _load_project_config(self) -> dict[str, Any]:
@@ -428,7 +461,7 @@ class ExtensionBuilder:
                 successful_platforms = platforms_with_wheels
             except Exception as e:
                 failed_platforms.extend(platforms_with_wheels)
-                logger.error(f"❌ Failed to download wheels: {e}")
+                logger.error(f"Failed to download wheels: {e}")
 
         if failed_platforms and not successful_platforms:
             raise DependencyError(
@@ -530,11 +563,11 @@ class ExtensionBuilder:
         else:
             if "platforms" in platform:
                 logger.info(
-                    f"✅ Successfully downloaded {success_count} unique wheels for {platform}"
+                    f"Successfully downloaded {success_count} unique wheels for {platform}"
                 )
             else:
                 logger.info(
-                    f"✅ Successfully downloaded {success_count} wheels for {platform}"
+                    f"Successfully downloaded {success_count} wheels for {platform}"
                 )
 
     def _download_wheels_with_pip(
@@ -585,12 +618,12 @@ class ExtensionBuilder:
                 self._run_python_command(cmd)
                 successful_platforms.append(platform_obj.name)
                 logger.info(
-                    f"✅ Successfully downloaded wheels for {platform_obj.name}"
+                    f"Successfully downloaded wheels for {platform_obj.name}"
                 )
             except DependencyError as e:
                 failed_platforms.append(platform_obj.name)
                 logger.error(
-                    f"❌ Failed to download wheels for {platform_obj.name}: {e}"
+                    f"Failed to download wheels for {platform_obj.name}: {e}"
                 )
 
         if failed_platforms and not successful_platforms:
@@ -791,10 +824,10 @@ class ExtensionBuilder:
             # Look for created extension files
             extension_files = list(self.output_dir.glob("*.zip"))
             if extension_files:
-                logger.info(f"✅ Built {len(extension_files)} extension packages:")
+                logger.info(f"Built {len(extension_files)} extension packages:")
                 for ext_file in extension_files:
                     size_mb = ext_file.stat().st_size / (1024 * 1024)
-                    logger.info(f"  📦 {ext_file.name} ({size_mb:.1f} MB)")
+                    logger.info(f"  {ext_file.name} ({size_mb:.1f} MB)")
             else:
                 logger.info(
                     f"Build completed successfully for platforms: {', '.join(successful_platforms)}"

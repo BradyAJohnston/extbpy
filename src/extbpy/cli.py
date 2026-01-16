@@ -74,7 +74,7 @@ def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
     "--platform",
     "-p",
     multiple=True,
-    type=click.Choice(["windows-x64", "linux-x64", "macos-arm64", "macos-x64", "all"]),
+    type=click.Choice(["windows-x64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "all"]),
     help='Target platforms (can be specified multiple times). Use "all" for all supported platforms',
 )
 @click.option(
@@ -103,6 +103,12 @@ def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
     multiple=True,
     help="Additional wheel URLs to download (can be specified multiple times)",
 )
+@click.option(
+    "--extension-path",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Custom paths to search for extension directories (can be specified multiple times)",
+)
 def build(
     source_dir: Path,
     output_dir: Path,
@@ -113,6 +119,7 @@ def build(
     exclude_package: list[str],
     ignore_platform_errors: bool,
     wheel_url: list[str],
+    extension_path: list[Path],
 ) -> None:
     """
     Build a Blender extension with Python dependencies
@@ -127,6 +134,7 @@ def build(
             output_dir=output_dir,
             python_version=python_version,
             excluded_packages=set(exclude_package),
+            custom_extension_paths=list(extension_path) if extension_path else None,
         )
 
         # Handle platform selection
@@ -164,7 +172,7 @@ def build(
             invalid_platforms = [p for p in platform if p not in valid_platforms]
             if invalid_platforms:
                 console.print(
-                    f"[bold red]❌ Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
+                    f"[bold red] Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
                 )
                 console.print(
                     f"Valid platforms are: {', '.join(sorted(valid_platforms))}"
@@ -207,14 +215,23 @@ def build(
     default=[".blend1", ".MNSession"],
     help="File patterns to clean (can be specified multiple times)",
 )
-def clean(source_dir: Path, pattern: list[str]) -> None:
+@click.option(
+    "--extension-path",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Custom paths to search for extension directories (can be specified multiple times)",
+)
+def clean(source_dir: Path, pattern: list[str], extension_path: list[Path]) -> None:
     """
     Clean temporary files from extension directory
 
     Removes temporary files like .blend1 and .MNSession files.
     """
     try:
-        builder = ExtensionBuilder(source_dir=source_dir)
+        builder = ExtensionBuilder(
+            source_dir=source_dir,
+            custom_extension_paths=list(extension_path) if extension_path else None,
+        )
         cleaned_count = builder.clean_files(patterns=pattern)
 
         if cleaned_count > 0:
@@ -253,12 +270,19 @@ def clean(source_dir: Path, pattern: list[str]) -> None:
     multiple=True,
     help="Additional wheel URLs to download (can be specified multiple times)",
 )
+@click.option(
+    "--extension-path",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Custom paths to search for extension directories (can be specified multiple times)",
+)
 def download(
     source_dir: Path,
     platform: list[str],
     python_version: str,
     clean: bool,
     wheel_url: list[str],
+    extension_path: list[Path],
 ) -> None:
     """
     Download Python wheels for specified platforms
@@ -266,7 +290,11 @@ def download(
     Downloads wheels without building the extension.
     """
     try:
-        builder = ExtensionBuilder(source_dir=source_dir, python_version=python_version)
+        builder = ExtensionBuilder(
+            source_dir=source_dir, 
+            python_version=python_version,
+            custom_extension_paths=list(extension_path) if extension_path else None,
+        )
 
         # Handle platform selection
         if "all" in platform:
@@ -303,7 +331,7 @@ def download(
             invalid_platforms = [p for p in platform if p not in valid_platforms]
             if invalid_platforms:
                 console.print(
-                    f"[bold red]❌ Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
+                    f"[bold red] Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
                 )
                 console.print(
                     f"Valid platforms are: {', '.join(sorted(valid_platforms))}"
@@ -341,14 +369,23 @@ def download(
 @click.option(
     "--clean/--no-clean", default=True, help="Clean wheel directory before downloading"
 )
-def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
+@click.option(
+    "--extension-path",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Custom paths to search for extension directories (can be specified multiple times)",
+)
+def download_urls(source_dir: Path, url: list[str], clean: bool, extension_path: list[Path]) -> None:
     """
     Download wheels from specific URLs
 
     Downloads wheels directly from provided URLs without platform resolution.
     """
     try:
-        builder = ExtensionBuilder(source_dir=source_dir)
+        builder = ExtensionBuilder(
+            source_dir=source_dir,
+            custom_extension_paths=list(extension_path) if extension_path else None,
+        )
 
         # Create wheels directory
         builder.wheels_dir.mkdir(parents=True, exist_ok=True)
@@ -376,14 +413,23 @@ def download_urls(source_dir: Path, url: list[str], clean: bool) -> None:
     default=Path.cwd(),
     help="Source directory containing extension",
 )
-def info(source_dir: Path) -> None:
+@click.option(
+    "--extension-path",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="Custom paths to search for extension directories (can be specified multiple times)",
+)
+def info(source_dir: Path, extension_path: list[Path]) -> None:
     """
     Show information about the extension project
 
     Displays project metadata, dependencies, and configuration.
     """
     try:
-        builder = ExtensionBuilder(source_dir=source_dir)
+        builder = ExtensionBuilder(
+            source_dir=source_dir,
+            custom_extension_paths=list(extension_path) if extension_path else None,
+        )
         info_data = builder.get_project_info()
 
         console.print("[bold blue]Project Information[/bold blue]")
