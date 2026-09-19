@@ -1,39 +1,22 @@
-"""
-Custom exceptions for extbpy.
-"""
-
-
 class ExtbpyError(Exception):
-    """Base exception for all extbpy errors."""
-
-    pass
+    """Base class for all extbpy errors."""
 
 
 class ConfigurationError(ExtbpyError):
-    """Raised when there's an issue with project configuration."""
-
-    pass
+    """pyproject.toml or the generated manifest is invalid."""
 
 
 class DependencyError(ExtbpyError):
-    """Raised when there's an issue with dependencies."""
-
-    pass
+    """uv.lock is missing, stale, or has no usable wheel for a target."""
 
 
 class BuildError(ExtbpyError):
-    """Raised when there's an issue during the build process."""
-
-    pass
+    """A required file is missing or packing failed."""
 
 
 class BlenderError(ExtbpyError):
-    """Raised when there's an issue with Blender execution."""
-
-    pass
+    """Blender rejected a built zip."""
 
 
 class PlatformError(ExtbpyError):
-    """Raised when there's an issue with platform detection or handling."""
-
-    pass
+    """Unknown or undetectable platform."""

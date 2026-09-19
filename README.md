@@ -1,173 +1,129 @@
 # extbpy
 
-A minimal CLI tool for building Blender extensions with Python dependencies using uv for fast, reliable dependency resolution.
+Build Blender extensions from a standard `uv` project.
 
-## Features
+`pyproject.toml` is the single source of truth: `[project]` supplies the
+generic metadata and `[tool.extbpy]` supplies what is specific to Blender.
+`extbpy` generates `blender_manifest.toml`, picks the right wheel for every
+dependency and platform from `uv.lock`, downloads them into a cache, and
+writes one installable zip per platform. No Blender install is needed to
+build; if one is on `PATH` the zips are validated with
+`blender --command extension validate`.
 
-- **Easy Extension Building** - Build Blender extensions with a simple command
-- **Fast Dependency Resolution** - Uses uv.lock for precise, reproducible builds
-- **Cross-Platform Support** - Build for Windows, macOS (Intel & ARM), and Linux
-- **Platform Configuration** - Configure target platforms in pyproject.toml
-- **Rich CLI Interface** - Clean command-line interface with progress indicators
-- **Smart Cleanup** - Automatic removal of temporary files and excluded packages
-
-## Installation
-
-```bash
-# Install uv (recommended package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install extbpy
-uv add extbpy
-```
-
-## Quick Start
-
-### 1. Set up your project with uv:
+## Quick start
 
 ```bash
-# Initialize a new project
-uv init my-blender-extension
-cd my-blender-extension
-
-# Add dependencies
-uv add numpy requests
-
-# Generate lock file for reproducible builds
+uv init my-extension && cd my-extension
+uv add numpy scipy          # any dependencies with wheels on PyPI
 uv lock
 ```
 
-### 2. Configure platforms in your `pyproject.toml`:
+Add the Blender-specific fields to `pyproject.toml`:
 
 ```toml
 [project]
-name = "my-extension"
-dependencies = [
-    "numpy>=1.20.0",
-    "requests>=2.25.0",
-]
+name = "my_extension"            # becomes the extension id
+version = "1.0.0"
+description = "Does something useful in Blender"   # becomes the tagline
+license = "GPL-3.0-or-later"
+requires-python = "~=3.13.0"
+maintainers = [{ name = "Jane Doe", email = "jane@example.com" }]
+dependencies = ["numpy", "scipy"]
+
+[project.urls]
+Homepage = "https://example.com/my-extension"
 
 [tool.extbpy]
-platforms = ["windows-x64", "macos-arm64", "linux-x64"]
+pretty_name = "My Extension"
+blender_version_min = "5.2.0"
+platforms = ["windows-x64", "linux-x64", "macos-arm64"]
+tags = ["Geometry Nodes"]
+copyright = ["2026 Jane Doe"]
+
+[tool.extbpy.permissions]
+network = "Downloads example data"
 ```
 
-### 3. Build your extension:
+Put the extension package at `my_extension/__init__.py` (or `src/my_extension/`), then:
 
 ```bash
-# Uses configured platforms from uv.lock
-uv run extbpy build
-
-# Or specify platforms manually
-uv run extbpy build --platform windows-x64 --platform macos-arm64
-
-# Or build for all supported platforms
-uv run extbpy build --platform all
+uvx extbpy build
 ```
 
-## Platform Configuration
-
-Configure your target platforms in `pyproject.toml`:
-
-```toml
-[tool.extbpy]
-platforms = ["windows-x64", "linux-x64", "macos-arm64", "macos-x64"]
-```
-
-**Platform Selection Priority:**
-1. **Explicit platforms** (`--platform windows-x64`) → Uses specified platforms
-2. **"all" flag** (`--platform all`) → Uses configured platforms or all supported
-3. **No platforms** (`extbpy build`) → Uses configured platforms or current platform
-
-**Supported Platforms:**
-- `windows-x64` - Windows 64-bit
-- `linux-x64` - Linux 64-bit  
-- `macos-arm64` - macOS Apple Silicon
-- `macos-x64` - macOS Intel
+This writes `my_extension-1.0.0-<platform>.zip` for every configured platform.
 
 ## Commands
 
-### `build` - Build Extension
+| Command | What it does |
+| --- | --- |
+| `extbpy build` | Resolve, download, pack and (if Blender is found) validate. |
+| `extbpy download` | Only fill the wheel cache. |
+| `extbpy manifest` | Print the generated `blender_manifest.toml`. |
+| `extbpy info` | Show the parsed extension specification. |
+| `extbpy clean` | Delete stray `*.blend1` and similar files from the package. |
+
+Useful `build` options:
+
+- `-p/--platform` selects platforms (`-p linux-x64 -p windows-x64`, `-p current`, `-p all`).
+- `-o/--output-dir` chooses where zips go (default: current directory).
+- `--wheels-dir` overrides the cache (default: `<project>/.extbpy/wheels`, add it to `.gitignore`).
+- `--blender PATH` / `--no-check` control validation with Blender.
+- `--skip-lock-check` skips verifying that `uv.lock` matches `pyproject.toml`.
+
+## `[tool.extbpy]` reference
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `blender_version_min` | yes | Minimum Blender version, e.g. `"5.2.0"`. Determines Python version, supported platforms and vendored packages. |
+| `pretty_name` | no | Human-readable name (default: `project.name`). |
+| `tagline` | no | Overrides `project.description`. At most 64 characters, no trailing punctuation. |
+| `id` | no | Extension id (default: `project.name` with `-` replaced by `_`). |
+| `blender_version_max` | no | Exclusive upper Blender version. |
+| `platforms` | no | Subset of the platforms Blender ships for (default: all of them). |
+| `tags` | no | Blender extension tags. |
+| `copyright` | no | List of `"YEAR Name"` entries. |
+| `permissions` | no | Table of `files`, `network`, `clipboard`, `camera`, `microphone` with a short reason each. |
+| `license` | no | Overrides `project.license`; SPDX identifiers. |
+| `maintainer` | no | Overrides the first entry of `project.maintainers`. |
+| `website` | no | Overrides `project.urls.Homepage`. |
+| `package_dir` | no | Where the extension package lives, if not `<id>/` or `src/<id>/`. |
+| `exclude_packages` | no | Extra packages never to bundle, on top of what Blender vendors (`numpy`, `requests`, ...). |
+| `extras` | no | Optional-dependency groups to bundle as well. |
+| `min_glibc_version` | no | `[MAJOR, MINOR]` floor for Linux wheels (default from Blender version). |
+| `min_macos_version` | no | `[MAJOR, MINOR]` floor for macOS wheels (default from Blender version). |
+| `paths_exclude_pattern` | no | Extra gitignore-style patterns; `__pycache__/`, `.*` and `/*.zip` are always excluded. |
+| `required_files` | no | Paths relative to the project that must exist before building. |
+
+## How wheels are chosen
+
+For each platform, `extbpy` walks the dependency graph in `uv.lock` starting
+from your project's dependencies, following only edges whose environment
+markers hold on that platform and Blender's Python version. For every package
+it keeps one wheel: the interpreter, ABI and platform tags must match, Linux
+wheels must not need a newer glibc than Blender supports, macOS wheels must
+not need a newer macOS, and among the remaining candidates the newest OS
+floor and the most specific ABI win. Packages Blender ships itself are
+skipped. Anything without a usable wheel stops the build with a message that
+names the package, the platform, the packages that pull it in and the wheels
+that were rejected.
+
+## Acknowledgements
+
+The architecture (a `pyproject.toml`-driven spec, tag-based wheel selection
+against a per-platform marker environment, hash-verified wheel cache, and an
+in-process packer) follows [blext](https://codeberg.org/so-rose/blext) by
+Sofus Albert Høgsbro Rose. The code here is an independent implementation.
+
+## Development
 
 ```bash
-extbpy build [OPTIONS]
+uv sync --all-extras
+uvx pre-commit install      # ruff format, ruff check and ty run on every commit
+uv run pytest
 ```
 
-Build a complete Blender extension with Python dependencies.
-
-**Key Options:**
-- `-p, --platform` - Target platforms (windows-x64, linux-x64, macos-arm64, macos-x64, all)
-- `-s, --source-dir` - Source directory containing extension files
-- `-o, --output-dir` - Output directory for built extensions
-- `--clean/--no-clean` - Clean wheel directory before downloading (default: true)
-
-### `download` - Download Wheels Only
-
-```bash
-extbpy download [OPTIONS]
-```
-
-Download Python wheels without building the extension.
-
-### `info` - Project Information
-
-```bash
-extbpy info
-```
-
-Display project metadata, configured platforms, and dependencies.
-
-### `clean` - Clean Temporary Files
-
-```bash
-extbpy clean
-```
-
-Remove temporary files like .blend1 and .MNSession files.
-
-## How it Works
-
-extbpy uses **uv** for fast, reliable dependency resolution:
-
-1. **Lock File Based** - Reads from `uv.lock` for exact dependency versions
-2. **Cross-Platform Wheels** - Downloads platform-specific wheels from the lock file
-3. **Reproducible Builds** - Same lock file produces identical builds across environments
-4. **Fast Resolution** - Leverages uv's speed for dependency resolution
-
-## Project Structure
-
-```
-my-blender-extension/
-├── pyproject.toml          # Python project configuration  
-├── uv.lock                 # Locked dependencies (generated by uv)
-├── my-extension/           # Extension directory
-│   ├── blender_manifest.toml  # Blender extension manifest
-│   ├── __init__.py            # Extension code
-│   └── wheels/                # Downloaded wheels (auto-generated)
-└── README.md
-```
-
-## Examples
-
-```bash
-# Build using configured platforms
-uv run extbpy build
-
-# Build for specific platforms  
-uv run extbpy build -p windows-x64 -p macos-arm64
-
-# Build for all supported platforms
-uv run extbpy build -p all
-
-# Download wheels only
-uv run extbpy download -p linux-x64
-
-# Show project info
-uv run extbpy info
-
-# Clean temporary files
-uv run extbpy clean
-```
+CI runs the same ruff and ty checks plus the test suite on Linux, macOS and Windows.
 
 ## License
 
-MIT License - see the [LICENSE](LICENSE) file for details.
+MIT
