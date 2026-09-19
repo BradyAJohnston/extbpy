@@ -9,9 +9,15 @@ import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from .exceptions import BlenderError, BuildError, ConfigurationError, DependencyError
+from .exceptions import (
+    BlenderError,
+    BuildError,
+    ConfigurationError,
+    DependencyError,
+    PlatformError,
+)
 from .extyp import BLManifest, BLPlatform
-from .pack import pack_extension
+from .pack import MANIFEST_FILENAME, WHEELS_DIRNAME, pack_extension
 from .pydeps import LockFile, Resolution, Wheel
 from .pydeps.download import FinishCallback, ProgressCallback, download_wheels
 from .spec import ExtensionSpec
@@ -138,20 +144,83 @@ def validate_with_blender(blender_exe: str, zip_path: Path) -> None:
         )
 
 
+def local_platform() -> BLPlatform | None:
+    try:
+        return BLPlatform.detect()
+    except PlatformError:
+        return None
+
+
+def sync_package(
+    spec: ExtensionSpec, target: BuildTarget, wheel_paths: dict[Wheel, Path]
+) -> Path:
+    """Write the manifest and wheels into the package so Blender can load it from source.
+
+    Wheels are hard-linked from the cache when possible; stale wheels are removed.
+    """
+    pkg_wheels = spec.package_dir / WHEELS_DIRNAME
+    pkg_wheels.mkdir(exist_ok=True)
+    wanted = {w.filename for w in target.wheels}
+    for stale in pkg_wheels.glob("*.whl"):
+        if stale.name not in wanted:
+            stale.unlink()
+    for wheel in target.wheels:
+        dest = pkg_wheels / wheel.filename
+        if dest.exists():
+            continue
+        try:
+            os.link(wheel_paths[wheel], dest)
+        except OSError:
+            shutil.copy2(wheel_paths[wheel], dest)
+    manifest_path = spec.package_dir / MANIFEST_FILENAME
+    manifest_path.write_text(target.manifest(spec).to_toml())
+    return manifest_path
+
+
+def _resolve_targets(
+    spec: ExtensionSpec, platforms: tuple[BLPlatform, ...]
+) -> list[BuildTarget]:
+    check_required_files(spec)
+    lock = LockFile.load(spec.uv_lock_path, spec.id)
+    return plan_targets(spec, resolve_all(spec, lock, platforms))
+
+
+def sync(
+    spec: ExtensionSpec,
+    *,
+    wheels_dir: Path,
+    on_download_progress: ProgressCallback | None = None,
+    on_download_finish: FinishCallback | None = None,
+) -> Path:
+    """Set up the package for local development on this machine's platform."""
+    platform = local_platform()
+    if platform is None or platform not in spec.platforms:
+        raise PlatformError(
+            f"This machine's platform ({platform or 'unknown'}) is not in "
+            f"tool.extbpy.platforms ({', '.join(p.value for p in spec.platforms)})"
+        )
+    (target,) = _resolve_targets(spec, (platform,))
+    paths = download_wheels(
+        target.wheels,
+        wheels_dir,
+        on_progress=on_download_progress,
+        on_finish=on_download_finish,
+    )
+    return sync_package(spec, target, paths)
+
+
 def build(
     spec: ExtensionSpec,
     *,
     platforms: tuple[BLPlatform, ...],
     output_dir: Path,
     wheels_dir: Path,
+    sync_local: bool = True,
     on_download_progress: ProgressCallback | None = None,
     on_download_finish: FinishCallback | None = None,
     on_status: Callable[[str], None] = lambda _: None,
 ) -> list[BuildResult]:
-    check_required_files(spec)
-    lock = LockFile.load(spec.uv_lock_path, spec.id)
-    resolutions = resolve_all(spec, lock, platforms)
-    targets = plan_targets(spec, resolutions)
+    targets = _resolve_targets(spec, platforms)
     # Validate every manifest up front, before any download happens.
     manifests = {t: t.manifest(spec) for t in targets}
 
@@ -176,4 +245,14 @@ def build(
             output_path=zip_path,
         )
         results.append(BuildResult(target, zip_path))
+
+    if sync_local:
+        platform = local_platform()
+        for target in targets:
+            if target.platform is None or target.platform == platform:
+                manifest_path = sync_package(spec, target, paths)
+                on_status(
+                    f"Wrote {manifest_path} and {len(target.wheels)} wheel(s) for local use"
+                )
+                break
     return results

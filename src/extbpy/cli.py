@@ -148,6 +148,11 @@ def cli(verbose: bool) -> None:
 )
 @click.option("--no-check", is_flag=True, help="Skip validating the zips with Blender.")
 @click.option(
+    "--no-sync",
+    is_flag=True,
+    help="Do not write blender_manifest.toml and wheels/ into the package for local use.",
+)
+@click.option(
     "--skip-lock-check",
     is_flag=True,
     help="Do not verify uv.lock matches pyproject.toml.",
@@ -160,9 +165,14 @@ def build(
     output_dir: Path,
     blender: str | None,
     no_check: bool,
+    no_sync: bool,
     skip_lock_check: bool,
 ) -> None:
-    """Resolve, download and pack the extension for each platform."""
+    """Resolve, download and pack the extension for each platform.
+
+    Also writes blender_manifest.toml and wheels/ into the package for this
+    machine's platform, so Blender can load the add-on straight from source.
+    """
     try:
         spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
         selected = _select_platforms(spec, platforms)
@@ -185,6 +195,7 @@ def build(
                 platforms=selected,
                 output_dir=output_dir.resolve(),
                 wheels_dir=_wheels_dir(spec, wheels_dir),
+                sync_local=not no_sync,
                 on_download_progress=ui.on_progress,
                 on_download_finish=ui.on_finish,
                 on_status=console.print,
@@ -209,6 +220,31 @@ def build(
             console.print(
                 f"  {status} {r.zip_path} ({size_mb:.1f} MB, {len(r.target.wheels)} wheels)"
             )
+    except ExtbpyError as e:
+        _fail(str(e))
+
+
+@cli.command()
+@_source_dir_option
+@_package_dir_option
+@_wheels_dir_option
+def sync(source_dir: Path, package_dir: Path | None, wheels_dir: Path | None) -> None:
+    """Write blender_manifest.toml and wheels/ into the package for local development.
+
+    Blender can then load the add-on from the source directory (for example via
+    the Blender VS Code extension) without building a zip.
+    """
+    try:
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
+        ui = _DownloadUI()
+        with ui.progress:
+            manifest_path = build_mod.sync(
+                spec,
+                wheels_dir=_wheels_dir(spec, wheels_dir),
+                on_download_progress=ui.on_progress,
+                on_download_finish=ui.on_finish,
+            )
+        console.print(f"Wrote {manifest_path} and {manifest_path.parent / 'wheels'}")
     except ExtbpyError as e:
         _fail(str(e))
 

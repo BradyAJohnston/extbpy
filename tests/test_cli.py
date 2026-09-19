@@ -29,17 +29,17 @@ def test_unknown_platform_fails(project):
     assert "Unsupported platform" in result.output
 
 
-def test_build_command(project, tmp_path, monkeypatch):
-    def fake(wheels, wheels_dir, **kwargs):
-        wheels_dir.mkdir(parents=True, exist_ok=True)
-        return {
-            w: (wheels_dir / w.filename, (wheels_dir / w.filename).write_bytes(b"PK"))[
-                0
-            ]
-            for w in wheels
-        }
+def _fake_download(wheels, wheels_dir, **kwargs):
+    wheels_dir.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    for w in wheels:
+        paths[w] = wheels_dir / w.filename
+        paths[w].write_bytes(b"PK")
+    return paths
 
-    monkeypatch.setattr(build_mod, "download_wheels", fake)
+
+def test_build_command(project, tmp_path, monkeypatch):
+    monkeypatch.setattr(build_mod, "download_wheels", _fake_download)
     result = CliRunner().invoke(
         cli,
         [
@@ -56,6 +56,22 @@ def test_build_command(project, tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert (tmp_path / "demo_ext-1.2.3-linux_x64.zip").is_file()
+
+
+def test_sync_command(project, tmp_path, monkeypatch):
+    from extbpy.extyp import BLPlatform
+
+    monkeypatch.setattr(build_mod, "local_platform", lambda: BLPlatform.linux_x64)
+    monkeypatch.setattr(build_mod, "download_wheels", _fake_download)
+    result = CliRunner().invoke(
+        cli, ["sync", "-s", str(project), "--wheels-dir", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        (project / "demo_ext" / "blender_manifest.toml")
+        .read_text()
+        .startswith("schema_version")
+    )
 
 
 def test_clean(project):

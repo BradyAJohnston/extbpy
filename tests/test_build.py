@@ -95,3 +95,66 @@ def test_required_files(project, tmp_path, fake_downloads):
             output_dir=tmp_path,
             wheels_dir=tmp_path,
         )
+
+
+def test_build_syncs_package_for_local_platform(
+    project, tmp_path, fake_downloads, monkeypatch
+):
+    monkeypatch.setattr(build_mod, "local_platform", lambda: BLPlatform.windows_x64)
+    spec = ExtensionSpec.from_pyproject(project)
+    build_mod.build(
+        spec,
+        platforms=(BLPlatform.linux_x64, BLPlatform.windows_x64),
+        output_dir=tmp_path / "dist",
+        wheels_dir=tmp_path / "cache",
+    )
+    manifest = (spec.package_dir / "blender_manifest.toml").read_text()
+    assert 'platforms = [\n    "windows-x64",\n]' in manifest
+    wheels = sorted(p.name for p in (spec.package_dir / "wheels").glob("*.whl"))
+    assert wheels == [
+        "binpkg-3.0.0-cp313-cp313-win_amd64.whl",
+        "purepkg-2.0.0-py3-none-any.whl",
+        "subdep-0.1.0-py2.py3-none-any.whl",
+        "winonly-1.0.0-py3-none-any.whl",
+    ]
+
+
+def test_build_skips_sync_when_local_platform_not_built(
+    project, tmp_path, fake_downloads, monkeypatch
+):
+    monkeypatch.setattr(build_mod, "local_platform", lambda: BLPlatform.macos_arm64)
+    spec = ExtensionSpec.from_pyproject(project)
+    build_mod.build(
+        spec,
+        platforms=(BLPlatform.linux_x64,),
+        output_dir=tmp_path,
+        wheels_dir=tmp_path,
+    )
+    assert (
+        spec.package_dir / "blender_manifest.toml"
+    ).read_text() == "# stale, must not be packed\n"
+    assert list((spec.package_dir / "wheels").glob("*.whl")) == [
+        spec.package_dir / "wheels" / "old-0.0.1-py3-none-any.whl"
+    ]
+
+
+def test_sync_replaces_stale_wheels(project, tmp_path, fake_downloads, monkeypatch):
+    monkeypatch.setattr(build_mod, "local_platform", lambda: BLPlatform.linux_x64)
+    spec = ExtensionSpec.from_pyproject(project)
+    manifest_path = build_mod.sync(spec, wheels_dir=tmp_path / "cache")
+    assert manifest_path == spec.package_dir / "blender_manifest.toml"
+    wheels = sorted(p.name for p in (spec.package_dir / "wheels").glob("*.whl"))
+    assert wheels == [
+        "binpkg-3.0.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+        "purepkg-2.0.0-py3-none-any.whl",
+        "subdep-0.1.0-py2.py3-none-any.whl",
+    ]
+
+
+def test_sync_rejects_unsupported_local_platform(project, tmp_path, monkeypatch):
+    from extbpy.exceptions import PlatformError
+
+    monkeypatch.setattr(build_mod, "local_platform", lambda: BLPlatform.linux_arm64)
+    spec = ExtensionSpec.from_pyproject(project)
+    with pytest.raises(PlatformError, match="linux-arm64"):
+        build_mod.sync(spec, wheels_dir=tmp_path)
