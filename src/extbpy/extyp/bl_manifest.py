@@ -1,13 +1,13 @@
 """A validated model of ``blender_manifest.toml`` (schema 1.0.0).
 
-Validation mirrors what ``blender --command extension validate`` checks, so
-that a manifest generated here is accepted by Blender without surprises.
+Validation mirrors what ``blender --command extension validate`` checks, so a
+manifest generated here is accepted by Blender without surprises.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Literal
 
 import pydantic
 
@@ -44,9 +44,12 @@ def _terse(value: str, field: str) -> str:
     return value
 
 
-class BLManifest(pydantic.BaseModel, frozen=True):
-    """Schema 1.0.0 of the Blender extension manifest."""
+def _toml_str(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
+
+class BLManifest(pydantic.BaseModel, frozen=True):
     schema_version: Literal["1.0.0"] = "1.0.0"
     id: str
     version: str
@@ -64,9 +67,6 @@ class BLManifest(pydantic.BaseModel, frozen=True):
     permissions: dict[PermissionKey, str] | None = None
     wheels: tuple[str, ...] | None = None
 
-    # ------------------------------------------------------------------
-    # Validators
-    # ------------------------------------------------------------------
     @pydantic.field_validator("id")
     @classmethod
     def _validate_id(cls, value: str) -> str:
@@ -161,13 +161,6 @@ class BLManifest(pydantic.BaseModel, frozen=True):
                 raise ValueError(f"'{item}' is not a valid wheel filename")
         return value
 
-    # ------------------------------------------------------------------
-    # Export
-    # ------------------------------------------------------------------
-    def to_dict(self) -> dict[str, Any]:
-        data = self.model_dump(mode="json", exclude_none=True)
-        return data
-
     def to_toml(self) -> str:
         """Render as TOML in the layout Blender's own template uses."""
         lines: list[str] = []
@@ -211,8 +204,3 @@ class BLManifest(pydantic.BaseModel, frozen=True):
             for key, value in self.permissions.items():
                 scalar(key, value)
         return "\n".join(lines) + "\n"
-
-
-def _toml_str(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'

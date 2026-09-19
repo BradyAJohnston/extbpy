@@ -14,7 +14,7 @@ MANIFEST_FILENAME = "blender_manifest.toml"
 WHEELS_DIRNAME = "wheels"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """Translate a glob to a regex where ``*`` and ``?`` never cross ``/``."""
     out = []

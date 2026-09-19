@@ -114,6 +114,16 @@ against a per-platform marker environment, hash-verified wheel cache, and an
 in-process packer) follows [blext](https://codeberg.org/so-rose/blext) by
 Sofus Albert Høgsbro Rose. The code here is an independent implementation.
 
+## Development
+
+```bash
+uv sync --all-extras
+uvx pre-commit install      # ruff format, ruff check and ty run on every commit
+uv run pytest
+```
+
+CI runs the same ruff and ty checks plus the test suite on Linux, macOS and Windows.
+
 ## License
 
 MIT

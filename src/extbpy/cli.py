@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 from rich.console import Console
@@ -19,10 +20,11 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from . import __version__, build as build_mod
+from . import __version__
+from . import build as build_mod
 from .exceptions import ExtbpyError
 from .extyp import BLPlatform
-from .pydeps import LockFile
+from .pydeps import LockFile, Wheel
 from .pydeps.download import download_wheels
 from .spec import ExtensionSpec
 
@@ -30,63 +32,39 @@ console = Console()
 err_console = Console(stderr=True)
 logger = logging.getLogger("extbpy")
 
+_source_dir_option = click.option(
+    "-s",
+    "--source-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=".",
+    show_default=True,
+    help="Project directory containing pyproject.toml and uv.lock.",
+)
+_package_dir_option = click.option(
+    "--package-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Extension package directory (defaults to <source-dir>/<id> or src/<id>).",
+)
+_platforms_option = click.option(
+    "-p",
+    "--platform",
+    "platforms",
+    multiple=True,
+    help="Target platform(s). Repeatable. 'all' = configured platforms, "
+    "'current' = this machine. Default: configured platforms.",
+)
+_wheels_dir_option = click.option(
+    "--wheels-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=f"Wheel cache directory. Default: <source-dir>/{build_mod.DEFAULT_WHEELS_DIRNAME}",
+)
 
-def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(message)s",
-        handlers=[RichHandler(console=err_console, show_path=False, show_time=False)],
-    )
 
-
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     err_console.print(f"[bold red]error:[/bold red] {message}")
     sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Shared options
-# ----------------------------------------------------------------------
-def _common_options(f):  # type: ignore[no-untyped-def]
-    f = click.option(
-        "-s",
-        "--source-dir",
-        type=click.Path(file_okay=False, path_type=Path),
-        default=".",
-        show_default=True,
-        help="Project directory containing pyproject.toml and uv.lock.",
-    )(f)
-    f = click.option(
-        "--package-dir",
-        type=click.Path(file_okay=False, path_type=Path),
-        default=None,
-        help="Extension package directory (defaults to <source-dir>/<id> or src/<id>).",
-    )(f)
-    return f
-
-
-def _platform_option(f):  # type: ignore[no-untyped-def]
-    return click.option(
-        "-p",
-        "--platform",
-        "platforms",
-        multiple=True,
-        help="Target platform(s). Repeatable. 'all' = configured platforms, "
-        "'current' = this machine. Default: configured platforms.",
-    )(f)
-
-
-def _wheels_dir_option(f):  # type: ignore[no-untyped-def]
-    return click.option(
-        "--wheels-dir",
-        type=click.Path(file_okay=False, path_type=Path),
-        default=None,
-        help=f"Wheel cache directory. Default: <source-dir>/{build_mod.DEFAULT_WHEELS_DIRNAME}",
-    )(f)
-
-
-def _load_spec(source_dir: Path, package_dir: Path | None) -> ExtensionSpec:
-    return ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
 
 
 def _select_platforms(
@@ -123,41 +101,36 @@ class _DownloadUI:
         )
         self.tasks: dict[str, TaskID] = {}
 
-    def __enter__(self) -> _DownloadUI:
-        self.progress.__enter__()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.progress.__exit__(*exc)  # type: ignore[arg-type]
-
-    def on_progress(self, wheel, nbytes: int) -> None:  # type: ignore[no-untyped-def]
+    def on_progress(self, wheel: Wheel, nbytes: int) -> None:
         task = self.tasks.get(wheel.filename)
         if task is None:
             task = self.progress.add_task(wheel.filename, total=wheel.size)
             self.tasks[wheel.filename] = task
         self.progress.update(task, advance=nbytes)
 
-    def on_finish(self, wheel, path: Path) -> None:  # type: ignore[no-untyped-def]
+    def on_finish(self, wheel: Wheel, path: Path) -> None:
         task = self.tasks.pop(wheel.filename, None)
         if task is not None:
             self.progress.remove_task(task)
         console.print(f"  downloaded {wheel.filename}")
 
 
-# ----------------------------------------------------------------------
-# Commands
-# ----------------------------------------------------------------------
 @click.group()
 @click.version_option(__version__, prog_name="extbpy")
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 def cli(verbose: bool) -> None:
     """Build Blender extensions from a uv project."""
-    _setup_logging(verbose)
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(console=err_console, show_path=False, show_time=False)],
+    )
 
 
 @cli.command()
-@_common_options
-@_platform_option
+@_source_dir_option
+@_package_dir_option
+@_platforms_option
 @_wheels_dir_option
 @click.option(
     "-o",
@@ -191,7 +164,7 @@ def build(
 ) -> None:
     """Resolve, download and pack the extension for each platform."""
     try:
-        spec = _load_spec(source_dir, package_dir)
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
         selected = _select_platforms(spec, platforms)
 
         if not skip_lock_check:
@@ -205,7 +178,8 @@ def build(
             f"[bold]{spec.name}[/bold] {spec.version} for Blender {spec.release.pretty_version}+ "
             f"({', '.join(p.value for p in selected)})"
         )
-        with _DownloadUI() as ui:
+        ui = _DownloadUI()
+        with ui.progress:
             results = build_mod.build(
                 spec,
                 platforms=selected,
@@ -213,14 +187,16 @@ def build(
                 wheels_dir=_wheels_dir(spec, wheels_dir),
                 on_download_progress=ui.on_progress,
                 on_download_finish=ui.on_finish,
-                on_status=lambda msg: console.print(msg),
+                on_status=console.print,
             )
 
-        blender_exe = None if no_check else build_mod.find_blender(blender)
-        if not no_check and blender_exe is None:
-            logger.info(
-                "Blender not found; skipping `blender --command extension validate`"
-            )
+        blender_exe = None
+        if not no_check:
+            blender_exe = blender or build_mod.find_blender()
+            if blender_exe is None:
+                logger.info(
+                    "Blender not found; skipping `blender --command extension validate`"
+                )
 
         console.print()
         for r in results:
@@ -238,8 +214,9 @@ def build(
 
 
 @cli.command()
-@_common_options
-@_platform_option
+@_source_dir_option
+@_package_dir_option
+@_platforms_option
 @_wheels_dir_option
 def download(
     source_dir: Path,
@@ -249,13 +226,14 @@ def download(
 ) -> None:
     """Download the wheels for the selected platforms into the cache."""
     try:
-        spec = _load_spec(source_dir, package_dir)
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
         selected = _select_platforms(spec, platforms)
         lock = LockFile.load(spec.uv_lock_path, spec.id)
         resolutions = build_mod.resolve_all(spec, lock, selected)
         needed = {w for r in resolutions.values() for w in r.wheels.values()}
         target = _wheels_dir(spec, wheels_dir)
-        with _DownloadUI() as ui:
+        ui = _DownloadUI()
+        with ui.progress:
             download_wheels(
                 needed, target, on_progress=ui.on_progress, on_finish=ui.on_finish
             )
@@ -265,7 +243,8 @@ def download(
 
 
 @cli.command()
-@_common_options
+@_source_dir_option
+@_package_dir_option
 @click.option(
     "-p",
     "--platform",
@@ -276,15 +255,11 @@ def download(
 def manifest(source_dir: Path, package_dir: Path | None, platform: str | None) -> None:
     """Print the blender_manifest.toml that would be generated."""
     try:
-        spec = _load_spec(source_dir, package_dir)
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
         selected = _select_platforms(spec, (platform,) if platform else ())
         lock = LockFile.load(spec.uv_lock_path, spec.id)
         resolutions = build_mod.resolve_all(spec, lock, selected)
         targets = build_mod.plan_targets(spec, resolutions)
-        if platform is not None:
-            targets = [
-                t for t in targets if t.platform is None or t.platform.value == platform
-            ]
         for i, target in enumerate(targets):
             if i:
                 console.print()
@@ -298,14 +273,14 @@ def manifest(source_dir: Path, package_dir: Path | None, platform: str | None) -
 
 
 @cli.command()
-@_common_options
+@_source_dir_option
+@_package_dir_option
 def info(source_dir: Path, package_dir: Path | None) -> None:
     """Show the extension specification parsed from pyproject.toml."""
     try:
-        spec = _load_spec(source_dir, package_dir)
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
     except ExtbpyError as e:
         _fail(str(e))
-        return
     table = Table(show_header=False, box=None)
     table.add_row("id", spec.id)
     table.add_row("name", spec.name)
@@ -328,7 +303,8 @@ def info(source_dir: Path, package_dir: Path | None) -> None:
 
 
 @cli.command()
-@_common_options
+@_source_dir_option
+@_package_dir_option
 @click.option(
     "--pattern",
     "patterns",
@@ -342,10 +318,9 @@ def clean(
 ) -> None:
     """Delete stray files (backup blends, sessions) from the package directory."""
     try:
-        spec = _load_spec(source_dir, package_dir)
+        spec = ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
     except ExtbpyError as e:
         _fail(str(e))
-        return
     removed = 0
     for pattern in patterns:
         for path in spec.package_dir.rglob(pattern):
@@ -358,7 +333,3 @@ def clean(
 
 def main() -> None:
     cli()
-
-
-if __name__ == "__main__":
-    main()

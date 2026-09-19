@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import tomllib
+import typing
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,17 @@ import packaging.utils
 import pydantic
 
 from .exceptions import ConfigurationError
-from .extyp import BLManifest, BLPlatform, BLRelease, parse_blender_version, release_for
+from .extyp import (
+    BLManifest,
+    BLPlatform,
+    BLRelease,
+    PermissionKey,
+    parse_blender_version,
+    release_for,
+)
 
 DEFAULT_PATHS_EXCLUDE_PATTERN: tuple[str, ...] = ("__pycache__/", ".*", "/*.zip")
-_VALID_PERMISSIONS = ("files", "network", "clipboard", "camera", "microphone")
+_VALID_PERMISSIONS: tuple[str, ...] = typing.get_args(PermissionKey)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,20 +48,13 @@ class ExtensionSpec:
     website: str | None = None
     copyright: tuple[str, ...] | None = None
     tags: tuple[str, ...] | None = None
-    permissions: dict[str, str] | None = None
+    permissions: dict[PermissionKey, str] | None = None
     min_glibc_version: tuple[int, int] | None = None
     min_macos_version: tuple[int, int] | None = None
     exclude_packages: frozenset[str] = frozenset()
     extras: tuple[str, ...] = ()
     paths_exclude_pattern: tuple[str, ...] = DEFAULT_PATHS_EXCLUDE_PATTERN
     required_files: tuple[str, ...] = ()
-
-    # ------------------------------------------------------------------
-    # Derived
-    # ------------------------------------------------------------------
-    @property
-    def pyproject_path(self) -> Path:
-        return self.source_dir / "pyproject.toml"
 
     @property
     def uv_lock_path(self) -> Path:
@@ -63,14 +64,6 @@ class ExtensionSpec:
     def excluded_packages(self) -> frozenset[str]:
         """Packages never bundled: Blender's vendored set plus project overrides."""
         return self.release.vendored_packages | self.exclude_packages
-
-    @property
-    def effective_min_glibc_version(self) -> tuple[int, int]:
-        return self.min_glibc_version or self.release.min_glibc_version
-
-    @property
-    def effective_min_macos_version(self) -> tuple[int, int]:
-        return self.min_macos_version or self.release.min_macos_version
 
     def zip_filename(self, platform: BLPlatform | None) -> str:
         """Matches the names ``blender --command extension build`` produces."""
@@ -99,17 +92,18 @@ class ExtensionSpec:
                 tags=self.tags,
                 license=self.license,
                 copyright=self.copyright,
-                permissions=self.permissions,  # type: ignore[arg-type]
+                permissions=self.permissions,
                 wheels=wheels,
             )
         except pydantic.ValidationError as e:
+            details = "\n".join(
+                f"  - {'.'.join(str(p) for p in err['loc']) or 'manifest'}: {err['msg']}"
+                for err in e.errors()
+            )
             raise ConfigurationError(
-                "Generated blender_manifest.toml is invalid:\n" + _format_validation(e)
+                "Generated blender_manifest.toml is invalid:\n" + details
             ) from None
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
     @classmethod
     def from_pyproject(
         cls, source_dir: Path, *, package_dir: Path | None = None
@@ -170,8 +164,6 @@ class ExtensionSpec:
         ).replace("-", "_")
         release = release_for(str(blender_version_min))
 
-        platforms = _parse_platforms(cfg.get("platforms"), release)
-        website = cfg.get("website") or _homepage(project)
         permissions = cfg.get("permissions")
         if permissions is not None:
             if not isinstance(permissions, dict):
@@ -186,13 +178,11 @@ class ExtensionSpec:
         if blender_version_max is not None:
             parse_blender_version(str(blender_version_max))
 
-        resolved_package_dir = _find_package_dir(
-            source_dir, ext_id, package_dir or cfg.get("package_dir")
-        )
-
         return cls(
             source_dir=source_dir,
-            package_dir=resolved_package_dir,
+            package_dir=_find_package_dir(
+                source_dir, ext_id, package_dir or cfg.get("package_dir")
+            ),
             id=ext_id,
             version=str(version),
             name=str(cfg.get("pretty_name") or project_name),
@@ -204,62 +194,41 @@ class ExtensionSpec:
             if blender_version_max
             else None,
             release=release,
-            platforms=platforms,
-            website=website,
-            copyright=_str_tuple(cfg.get("copyright"), "tool.extbpy.copyright"),
-            tags=_str_tuple(cfg.get("tags", cfg.get("bl_tags")), "tool.extbpy.tags"),
+            platforms=_parse_platforms(cfg, release),
+            website=cfg.get("website") or _homepage(project),
+            copyright=_opt_strs(cfg, "copyright"),
+            tags=_opt_strs(cfg, "tags" if "tags" in cfg else "bl_tags"),
             permissions=dict(permissions) if permissions else None,
-            min_glibc_version=_version_pair(
-                cfg.get("min_glibc_version"), "min_glibc_version"
-            ),
-            min_macos_version=_version_pair(
-                cfg.get("min_macos_version"), "min_macos_version"
-            ),
+            min_glibc_version=_version_pair(cfg, "min_glibc_version"),
+            min_macos_version=_version_pair(cfg, "min_macos_version"),
             exclude_packages=frozenset(
                 packaging.utils.canonicalize_name(n)
-                for n in _str_tuple(
-                    cfg.get("exclude_packages"), "tool.extbpy.exclude_packages"
-                )
-                or ()
+                for n in _strs(cfg, "exclude_packages")
             ),
             extras=tuple(
-                packaging.utils.canonicalize_name(e)
-                for e in _str_tuple(cfg.get("extras"), "tool.extbpy.extras") or ()
+                packaging.utils.canonicalize_name(e) for e in _strs(cfg, "extras")
             ),
             paths_exclude_pattern=DEFAULT_PATHS_EXCLUDE_PATTERN
-            + (
-                _str_tuple(
-                    cfg.get("paths_exclude_pattern"),
-                    "tool.extbpy.paths_exclude_pattern",
-                )
-                or ()
-            ),
-            required_files=_str_tuple(
-                cfg.get("required_files"), "tool.extbpy.required_files"
-            )
-            or (),
+            + _strs(cfg, "paths_exclude_pattern"),
+            required_files=_strs(cfg, "required_files"),
         )
 
 
-# ----------------------------------------------------------------------
-# Parsing helpers
-# ----------------------------------------------------------------------
-def _format_validation(e: pydantic.ValidationError) -> str:
-    return "\n".join(
-        f"  - {'.'.join(str(p) for p in err['loc']) or 'manifest'}: {err['msg']}"
-        for err in e.errors()
-    )
-
-
-def _str_tuple(value: Any, label: str) -> tuple[str, ...] | None:
+def _opt_strs(cfg: dict[str, Any], key: str) -> tuple[str, ...] | None:
+    value = cfg.get(key)
     if value is None:
         return None
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        raise ConfigurationError(f"{label} must be a list of strings")
+        raise ConfigurationError(f"tool.extbpy.{key} must be a list of strings")
     return tuple(value)
 
 
-def _version_pair(value: Any, label: str) -> tuple[int, int] | None:
+def _strs(cfg: dict[str, Any], key: str) -> tuple[str, ...]:
+    return _opt_strs(cfg, key) or ()
+
+
+def _version_pair(cfg: dict[str, Any], key: str) -> tuple[int, int] | None:
+    value = cfg.get(key)
     if value is None:
         return None
     if isinstance(value, str):
@@ -270,7 +239,7 @@ def _version_pair(value: Any, label: str) -> tuple[int, int] | None:
         parts = []
     if len(parts) != 2:
         raise ConfigurationError(
-            f"tool.extbpy.{label} must be [MAJOR, MINOR], got {value!r}"
+            f"tool.extbpy.{key} must be [MAJOR, MINOR], got {value!r}"
         )
     return (parts[0], parts[1])
 
@@ -322,15 +291,13 @@ def _homepage(project: dict[str, Any]) -> str | None:
     return None
 
 
-def _parse_platforms(value: Any, release: BLRelease) -> tuple[BLPlatform, ...]:
-    if value is None:
+def _parse_platforms(cfg: dict[str, Any], release: BLRelease) -> tuple[BLPlatform, ...]:
+    values = _opt_strs(cfg, "platforms")
+    if values is None:
         return tuple(sorted(release.platforms))
-    platforms = tuple(
-        BLPlatform.parse(str(v))
-        for v in _str_tuple(value, "tool.extbpy.platforms") or ()
-    )
-    if not platforms:
+    if not values:
         raise ConfigurationError("tool.extbpy.platforms must not be empty")
+    platforms = tuple(BLPlatform.parse(v) for v in values)
     unsupported = [p for p in platforms if p not in release.platforms]
     if unsupported:
         raise ConfigurationError(
@@ -341,10 +308,11 @@ def _parse_platforms(value: Any, release: BLRelease) -> tuple[BLPlatform, ...]:
     return platforms
 
 
-def _find_package_dir(source_dir: Path, ext_id: str, override: Any) -> Path:
-    candidates: list[Path]
+def _find_package_dir(
+    source_dir: Path, ext_id: str, override: Path | str | None
+) -> Path:
     if override is not None:
-        p = Path(str(override))
+        p = Path(override)
         candidates = [p if p.is_absolute() else source_dir / p]
     else:
         candidates = [source_dir / ext_id, source_dir / "src" / ext_id]

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import hashlib
+import operator
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
-import packaging.tags
 import packaging.utils
-import packaging.version
-import pydantic
 
 from ..extyp import BLPlatform
+
+Tag = tuple[str, str, str]  # (interpreter, abi, platform)
 
 _LEGACY_MANYLINUX = {
     "manylinux1": (2, 5),
@@ -32,16 +34,14 @@ def normalize_platform_tag(tag: str) -> str:
     return tag
 
 
-class Wheel(pydantic.BaseModel, frozen=True):
+@dataclasses.dataclass(frozen=True)
+class Wheel:
     """A wheel as recorded in ``uv.lock``."""
 
     url: str
     hash: str | None = None
     size: int | None = None
 
-    # ------------------------------------------------------------------
-    # Filename parsing
-    # ------------------------------------------------------------------
     @functools.cached_property
     def filename(self) -> str:
         name = self.url.rsplit("/", 1)[-1]
@@ -50,47 +50,25 @@ class Wheel(pydantic.BaseModel, frozen=True):
         return name
 
     @functools.cached_property
-    def _parsed(
-        self,
-    ) -> tuple[
-        packaging.utils.NormalizedName,
-        packaging.version.Version,
-        tuple[()] | tuple[int, str],
-        frozenset[packaging.tags.Tag],
-    ]:
-        return packaging.utils.parse_wheel_filename(self.filename)
-
-    @property
-    def package_name(self) -> str:
-        return self._parsed[0]
-
-    @property
-    def package_version(self) -> packaging.version.Version:
-        return self._parsed[1]
-
-    @functools.cached_property
-    def tags(self) -> frozenset[tuple[str, str, str]]:
+    def tags(self) -> frozenset[Tag]:
         """``(interpreter, abi, platform)`` triples with normalized platform tags."""
+        _, _, _, tags = packaging.utils.parse_wheel_filename(self.filename)
         return frozenset(
-            (t.interpreter, t.abi, normalize_platform_tag(t.platform))
-            for t in self._parsed[3]
+            (t.interpreter, t.abi, normalize_platform_tag(t.platform)) for t in tags
         )
 
     @functools.cached_property
     def is_universal(self) -> bool:
         return any(plat == "any" for _, _, plat in self.tags)
 
-    # ------------------------------------------------------------------
-    # Compatibility
-    # ------------------------------------------------------------------
     def compatible_tag(
         self,
         platform: BLPlatform,
         python_version: tuple[int, int],
         *,
-        min_glibc_version: tuple[int, int] | None,
-        min_macos_version: tuple[int, int] | None,
-    ) -> tuple[str, str, str] | None:
+        min_glibc_version: tuple[int, int],
+        min_macos_version: tuple[int, int],
+    ) -> Tag | None:
         """The best of this wheel's tags that runs on the target, or ``None``."""
         candidates = [
             tag
@@ -102,31 +80,6 @@ class Wheel(pydantic.BaseModel, frozen=True):
             return None
         return min(candidates, key=lambda t: _tag_sort_key(t, platform))
 
-    def sort_key(
-        self,
-        platform: BLPlatform,
-        python_version: tuple[int, int],
-        *,
-        min_glibc_version: tuple[int, int] | None,
-        min_macos_version: tuple[int, int] | None,
-    ) -> tuple:
-        """Lower sorts first. Only meaningful for compatible wheels."""
-        tag = self.compatible_tag(
-            platform,
-            python_version,
-            min_glibc_version=min_glibc_version,
-            min_macos_version=min_macos_version,
-        )
-        assert tag is not None
-        return (*_tag_sort_key(tag, platform), self.filename)
-
-    def os_version(self, platform_tag: str) -> tuple[int, int] | None:
-        """glibc or macOS version a platform tag requires, if any."""
-        return _os_version(platform_tag)
-
-    # ------------------------------------------------------------------
-    # Download validation
-    # ------------------------------------------------------------------
     def is_download_valid(self, path: Path) -> bool:
         if not path.is_file():
             return False
@@ -140,9 +93,30 @@ class Wheel(pydantic.BaseModel, frozen=True):
         return digest == expected
 
 
-# ----------------------------------------------------------------------
-# Tag checks
-# ----------------------------------------------------------------------
+def best_wheel(
+    wheels: Iterable[Wheel],
+    platform: BLPlatform,
+    python_version: tuple[int, int],
+    *,
+    min_glibc_version: tuple[int, int],
+    min_macos_version: tuple[int, int],
+) -> Wheel | None:
+    """The most suitable compatible wheel, or ``None`` if nothing fits."""
+    ranked: list[tuple[tuple[bool, int, int, int, bool, str], Wheel]] = []
+    for w in wheels:
+        tag = w.compatible_tag(
+            platform,
+            python_version,
+            min_glibc_version=min_glibc_version,
+            min_macos_version=min_macos_version,
+        )
+        if tag is not None:
+            ranked.append(((*_tag_sort_key(tag, platform), w.filename), w))
+    if not ranked:
+        return None
+    return min(ranked, key=operator.itemgetter(0))[1]
+
+
 def _python_ok(interp: str, abi: str, python_version: tuple[int, int]) -> bool:
     major, minor = python_version
     exact = f"cp{major}{minor}"
@@ -158,6 +132,7 @@ def _python_ok(interp: str, abi: str, python_version: tuple[int, int]) -> bool:
 
 
 def _os_version(platform_tag: str) -> tuple[int, int] | None:
+    """glibc or macOS floor a platform tag declares, if any."""
     m = _RE_MANYLINUX.match(platform_tag) or _RE_MACOS.match(platform_tag)
     if m is None:
         return None
@@ -176,8 +151,8 @@ def _tag_arch(platform_tag: str) -> str | None:
 def _platform_ok(
     platform_tag: str,
     platform: BLPlatform,
-    min_glibc_version: tuple[int, int] | None,
-    min_macos_version: tuple[int, int] | None,
+    min_glibc_version: tuple[int, int],
+    min_macos_version: tuple[int, int],
 ) -> bool:
     if platform_tag == "any":
         return True
@@ -187,20 +162,19 @@ def _platform_ok(
     if arch is None or arch not in platform.wheel_arches:
         return False
     os_ver = _os_version(platform_tag)
-    if platform.is_linux and min_glibc_version is not None:
+    if platform.is_linux:
         return os_ver is not None and os_ver <= min_glibc_version
-    if platform.is_macos and min_macos_version is not None:
+    if platform.is_macos:
         return os_ver is not None and os_ver <= min_macos_version
     return True
 
 
-def _tag_sort_key(tag: tuple[str, str, str], platform: BLPlatform) -> tuple:
-    interp, abi, plat = tag
-    is_any = plat == "any"
+def _tag_sort_key(tag: Tag, platform: BLPlatform) -> tuple[bool, int, int, int, bool]:
+    """Prefer native over universal, newest OS floor, most specific ABI, thin over fat."""
+    _, abi, plat = tag
     os_ver = _os_version(plat) or (0, 0)
     abi_rank = (
-        0 if abi.startswith("cp") and abi != "abi3" else (1 if abi == "abi3" else 2)
+        0 if abi.startswith("cp") and abi != "abi3" else 1 if abi == "abi3" else 2
     )
     is_fat = platform.is_macos and _tag_arch(plat) not in ("arm64", "x86_64")
-    # Prefer: native over universal, newest OS floor, most specific ABI, thin over fat.
-    return (is_any, -os_ver[0], -os_ver[1], abi_rank, is_fat)
+    return (plat == "any", -os_ver[0], -os_ver[1], abi_rank, is_fat)

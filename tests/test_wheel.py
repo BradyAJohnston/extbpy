@@ -1,9 +1,11 @@
 """Wheel tag parsing and platform compatibility."""
 
+import hashlib
+
 import pytest
 
 from extbpy.extyp import BLPlatform
-from extbpy.pydeps import Wheel
+from extbpy.pydeps import Wheel, best_wheel
 from extbpy.pydeps.wheel import normalize_platform_tag
 
 PY313 = (3, 13)
@@ -13,12 +15,9 @@ def w(filename: str) -> Wheel:
     return Wheel(url=f"https://example.com/{filename}")
 
 
-def compat(filename: str, platform: BLPlatform, py=PY313, glibc=(2, 28), macos=(12, 0)):
+def compat(filename: str, platform: BLPlatform, py=PY313):
     return w(filename).compatible_tag(
-        platform,
-        py,
-        min_glibc_version=glibc if platform.is_linux else None,
-        min_macos_version=macos if platform.is_macos else None,
+        platform, py, min_glibc_version=(2, 28), min_macos_version=(12, 0)
     )
 
 
@@ -85,10 +84,14 @@ def test_prefers_native_newest_floor_over_fat_and_old():
         w("pkg-1.0-cp313-cp313-macosx_11_0_arm64.whl"),
         w("pkg-1.0-py3-none-any.whl"),
     ]
-    kwargs = dict(min_glibc_version=None, min_macos_version=(12, 0))
-    best = min(
-        wheels, key=lambda x: x.sort_key(BLPlatform.macos_arm64, PY313, **kwargs)
+    best = best_wheel(
+        wheels,
+        BLPlatform.macos_arm64,
+        PY313,
+        min_glibc_version=(2, 28),
+        min_macos_version=(12, 0),
     )
+    assert best is not None
     assert best.filename == "pkg-1.0-cp313-cp313-macosx_11_0_arm64.whl"
 
 
@@ -98,15 +101,18 @@ def test_prefers_highest_compatible_glibc():
         w("pkg-1.0-cp313-cp313-manylinux_2_28_x86_64.whl"),
         w("pkg-1.0-cp313-cp313-manylinux_2_34_x86_64.whl"),
     ]
-    kwargs = dict(min_glibc_version=(2, 28), min_macos_version=None)
-    ok = [x for x in wheels if x.compatible_tag(BLPlatform.linux_x64, PY313, **kwargs)]
-    best = min(ok, key=lambda x: x.sort_key(BLPlatform.linux_x64, PY313, **kwargs))
+    best = best_wheel(
+        wheels,
+        BLPlatform.linux_x64,
+        PY313,
+        min_glibc_version=(2, 28),
+        min_macos_version=(12, 0),
+    )
+    assert best is not None
     assert best.filename == "pkg-1.0-cp313-cp313-manylinux_2_28_x86_64.whl"
 
 
 def test_download_validation(tmp_path):
-    import hashlib
-
     data = b"hello"
     path = tmp_path / "pkg-1.0-py3-none-any.whl"
     path.write_bytes(data)

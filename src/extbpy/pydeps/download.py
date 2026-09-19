@@ -12,17 +12,13 @@ from pathlib import Path
 from ..exceptions import DependencyError
 from .wheel import Wheel
 
-CHUNK_BYTES = 64 * 1024
+_CHUNK_BYTES = 64 * 1024
+_MAX_WORKERS = 8
+
 ProgressCallback = Callable[[Wheel, int], None]
-
-
-def cached_wheels(wheels: Iterable[Wheel], wheels_dir: Path) -> dict[Wheel, Path]:
-    """Wheels already present in ``wheels_dir`` with a matching hash and size."""
-    return {
-        w: wheels_dir / w.filename
-        for w in wheels
-        if w.is_download_valid(wheels_dir / w.filename)
-    }
+"""Called with the wheel and the number of bytes just received."""
+FinishCallback = Callable[[Wheel, Path], None]
+"""Called once a wheel is verified and in place."""
 
 
 def download_wheel(
@@ -36,7 +32,7 @@ def download_wheel(
             urllib.request.urlopen(wheel.url, timeout=30) as response,
             partial.open("wb") as f,
         ):
-            for chunk in iter(lambda: response.read(CHUNK_BYTES), b""):
+            for chunk in iter(lambda: response.read(_CHUNK_BYTES), b""):
                 f.write(chunk)
                 if on_progress is not None:
                     on_progress(wheel, len(chunk))
@@ -57,9 +53,8 @@ def download_wheels(
     wheels: Iterable[Wheel],
     wheels_dir: Path,
     *,
-    max_workers: int = 8,
     on_progress: ProgressCallback | None = None,
-    on_finish: Callable[[Wheel, Path], None] | None = None,
+    on_finish: FinishCallback | None = None,
 ) -> dict[Wheel, Path]:
     """Download every wheel not already valid in ``wheels_dir``.
 
@@ -67,12 +62,16 @@ def download_wheels(
     """
     wheels = list(wheels)
     wheels_dir.mkdir(parents=True, exist_ok=True)
-    paths = cached_wheels(wheels, wheels_dir)
+    paths = {
+        w: wheels_dir / w.filename
+        for w in wheels
+        if w.is_download_valid(wheels_dir / w.filename)
+    }
     todo = [w for w in wheels if w not in paths]
     if not todo:
         return paths
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
         futures = {
             pool.submit(download_wheel, w, wheels_dir, on_progress=on_progress): w
             for w in sorted(todo, key=lambda w: w.size or 0, reverse=True)

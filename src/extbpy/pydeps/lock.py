@@ -12,8 +12,8 @@ import packaging.utils
 
 from ..exceptions import DependencyError
 from ..extyp import BLPlatform, BLRelease
-from .marker import marker_environments, marker_holds
-from .wheel import Wheel
+from .marker import MarkerEnv, marker_environments, marker_holds
+from .wheel import Wheel, best_wheel
 
 PackageKey = tuple[str, str]  # (canonical name, version)
 
@@ -43,35 +43,6 @@ class PyDep:
     def key(self) -> PackageKey:
         return (self.name, self.version)
 
-    @property
-    def is_registry(self) -> bool:
-        return "registry" in self.source
-
-    def select_wheel(
-        self,
-        platform: BLPlatform,
-        release: BLRelease,
-        *,
-        min_glibc_version: tuple[int, int],
-        min_macos_version: tuple[int, int],
-    ) -> Wheel | None:
-        """The best wheel for the target, or ``None`` if nothing fits."""
-        kwargs = dict(
-            min_glibc_version=min_glibc_version if platform.is_linux else None,
-            min_macos_version=min_macos_version if platform.is_macos else None,
-        )
-        compatible = [
-            w
-            for w in self.wheels
-            if w.compatible_tag(platform, release.python_version, **kwargs) is not None
-        ]
-        if not compatible:
-            return None
-        return min(
-            compatible,
-            key=lambda w: w.sort_key(platform, release.python_version, **kwargs),
-        )
-
 
 @dataclasses.dataclass(frozen=True)
 class MissingWheel:
@@ -87,7 +58,7 @@ class MissingWheel:
         ]
         if self.required_by:
             lines.append(f"  required by: {', '.join(sorted(self.required_by))}")
-        if not self.package.is_registry:
+        if "registry" not in self.package.source:
             lines.append(f"  source is not a registry: {self.package.source}")
         elif not self.package.wheels:
             lines.append("  the lockfile only records a source distribution")
@@ -103,35 +74,19 @@ class MissingWheel:
 
 @dataclasses.dataclass(frozen=True)
 class Resolution:
-    """Wheels chosen for one platform."""
+    """Wheels chosen for one platform, keyed by canonical package name."""
 
-    platform: BLPlatform
     wheels: dict[str, Wheel]
     missing: tuple[MissingWheel, ...]
-    excluded: frozenset[str]
-
-    @property
-    def ok(self) -> bool:
-        return not self.missing
 
 
+@dataclasses.dataclass(frozen=True)
 class LockFile:
     """A parsed ``uv.lock``."""
 
-    def __init__(self, packages: dict[PackageKey, PyDep], root_name: str) -> None:
-        self.packages = packages
-        self.root_name = packaging.utils.canonicalize_name(root_name)
-        roots = [p for p in packages.values() if p.name == self.root_name]
-        if not roots:
-            raise DependencyError(
-                f"uv.lock has no entry for the project '{root_name}'. "
-                "Run `uv lock` in the project directory."
-            )
-        self.root = roots[0]
+    packages: dict[PackageKey, PyDep]
+    root: PyDep
 
-    # ------------------------------------------------------------------
-    # Loading
-    # ------------------------------------------------------------------
     @classmethod
     def load(cls, path: Path, root_name: str) -> LockFile:
         if not path.is_file():
@@ -140,19 +95,19 @@ class LockFile:
             )
         with path.open("rb") as f:
             data = tomllib.load(f)
-        return cls.from_dict(data, root_name)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any], root_name: str) -> LockFile:
-        packages: dict[PackageKey, PyDep] = {}
+        packages = {}
         for entry in data.get("package", []):
             dep = _parse_package(entry)
             packages[dep.key] = dep
-        return cls(packages, root_name)
+        root_name = packaging.utils.canonicalize_name(root_name)
+        roots = [p for p in packages.values() if p.name == root_name]
+        if not roots:
+            raise DependencyError(
+                f"uv.lock has no entry for the project '{root_name}'. "
+                "Run `uv lock` in the project directory."
+            )
+        return cls(packages, roots[0])
 
-    # ------------------------------------------------------------------
-    # Resolution
-    # ------------------------------------------------------------------
     def resolve(
         self,
         platform: BLPlatform,
@@ -191,7 +146,6 @@ class LockFile:
         required_by: dict[PackageKey, set[str]] = {}
         wheels: dict[str, Wheel] = {}
         missing: list[PyDep] = []
-        excluded_hit: set[str] = set()
 
         while queue:
             edge, parent = queue.popleft()
@@ -203,13 +157,12 @@ class LockFile:
                     continue
                 visited.add(dep.key)
                 queue.extend((e, dep.name) for e in dep.deps)
-
                 if dep.name in excluded:
-                    excluded_hit.add(dep.name)
                     continue
-                wheel = dep.select_wheel(
+                wheel = best_wheel(
+                    dep.wheels,
                     platform,
-                    release,
+                    release.python_version,
                     min_glibc_version=min_glibc,
                     min_macos_version=min_macos,
                 )
@@ -219,16 +172,14 @@ class LockFile:
                     wheels[dep.name] = wheel
 
         return Resolution(
-            platform=platform,
             wheels=wheels,
             missing=tuple(
                 MissingWheel(dep, platform, tuple(sorted(required_by[dep.key])))
                 for dep in missing
             ),
-            excluded=frozenset(excluded_hit),
         )
 
-    def _targets(self, edge: DepEdge, envs: tuple[dict[str, str], ...]) -> list[PyDep]:
+    def _targets(self, edge: DepEdge, envs: tuple[MarkerEnv, ...]) -> list[PyDep]:
         if edge.version is not None:
             key = (edge.name, edge.version)
             if key not in self.packages:
@@ -254,9 +205,6 @@ class LockFile:
         return applicable or candidates
 
 
-# ----------------------------------------------------------------------
-# Parsing helpers
-# ----------------------------------------------------------------------
 def _parse_edge(entry: dict[str, Any]) -> DepEdge:
     return DepEdge(
         name=packaging.utils.canonicalize_name(entry["name"]),
@@ -266,16 +214,15 @@ def _parse_edge(entry: dict[str, Any]) -> DepEdge:
 
 
 def _parse_package(entry: dict[str, Any]) -> PyDep:
-    wheels = tuple(
-        Wheel(url=w["url"], hash=w.get("hash"), size=w.get("size"))
-        for w in entry.get("wheels", [])
-        if "url" in w
-    )
     return PyDep(
         name=packaging.utils.canonicalize_name(entry["name"]),
         version=str(entry.get("version", "0")),
         source=dict(entry.get("source", {})),
-        wheels=wheels,
+        wheels=tuple(
+            Wheel(url=w["url"], hash=w.get("hash"), size=w.get("size"))
+            for w in entry.get("wheels", [])
+            if "url" in w
+        ),
         deps=tuple(_parse_edge(d) for d in entry.get("dependencies", [])),
         optional_deps={
             packaging.utils.canonicalize_name(extra): tuple(

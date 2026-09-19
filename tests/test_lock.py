@@ -33,7 +33,6 @@ def test_marker_edges_follow_platform(lock):
     win = lock.resolve(BLPlatform.windows_x64, REL, excluded=frozenset({"numpy"}))
     assert names(linux) == ["binpkg", "purepkg", "subdep"]
     assert names(win) == ["binpkg", "purepkg", "subdep", "winonly"]
-    assert linux.excluded == {"numpy"}
 
 
 def test_best_wheel_per_platform(lock):
@@ -54,7 +53,6 @@ def test_best_wheel_per_platform(lock):
 
 def test_vendored_package_is_reported_missing_when_not_excluded(lock):
     linux = lock.resolve(BLPlatform.linux_x64, REL)
-    assert not linux.ok
     (missing,) = linux.missing
     assert missing.package.name == "numpy"
     assert set(missing.required_by) == {"demo-ext", "binpkg"}

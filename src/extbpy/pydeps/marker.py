@@ -8,10 +8,12 @@ import packaging.markers
 
 from ..extyp import BLPlatform, BLRelease
 
+MarkerEnv = dict[str, str]
+
 
 def marker_environments(
     platform: BLPlatform, release: BLRelease
-) -> tuple[dict[str, str], ...]:
+) -> tuple[MarkerEnv, ...]:
     """Every marker environment a user of ``platform`` + ``release`` may have.
 
     ``platform_machine`` can take several values on one platform, so one
@@ -38,14 +40,14 @@ def marker_environments(
     )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _parse(marker: str) -> packaging.markers.Marker:
     return packaging.markers.Marker(marker)
 
 
-def marker_holds(marker: str | None, environments: tuple[dict[str, str], ...]) -> bool:
+def marker_holds(marker: str | None, environments: tuple[MarkerEnv, ...]) -> bool:
     """Whether ``marker`` (``None`` means unconditional) holds in any environment."""
     if marker is None:
         return True
     parsed = _parse(marker)
-    return any(parsed.evaluate(environment=env) for env in environments)  # type: ignore[arg-type]
+    return any(parsed.evaluate(environment=env) for env in environments)

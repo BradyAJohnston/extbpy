@@ -13,8 +13,6 @@ from ..exceptions import PlatformError
 
 
 class BLPlatform(enum.StrEnum):
-    """An operating system / CPU architecture pair supported by Blender."""
-
     linux_x64 = "linux-x64"
     linux_arm64 = "linux-arm64"
     macos_x64 = "macos-x64"
@@ -22,9 +20,6 @@ class BLPlatform(enum.StrEnum):
     windows_x64 = "windows-x64"
     windows_arm64 = "windows-arm64"
 
-    # ------------------------------------------------------------------
-    # OS classification
-    # ------------------------------------------------------------------
     @property
     def is_linux(self) -> bool:
         return self in (BLPlatform.linux_x64, BLPlatform.linux_arm64)
@@ -37,9 +32,6 @@ class BLPlatform(enum.StrEnum):
     def is_windows(self) -> bool:
         return self in (BLPlatform.windows_x64, BLPlatform.windows_arm64)
 
-    # ------------------------------------------------------------------
-    # Wheel platform tags
-    # ------------------------------------------------------------------
     @property
     def wheel_tag_prefix(self) -> str:
         """Prefix of wheel platform tags that can run on this platform."""
@@ -63,9 +55,6 @@ class BLPlatform(enum.StrEnum):
             BLPlatform.windows_arm64: frozenset({"arm64"}),
         }[self]
 
-    # ------------------------------------------------------------------
-    # PEP 508 marker environment
-    # ------------------------------------------------------------------
     @property
     def marker_os_name(self) -> str:
         return "nt" if self.is_windows else "posix"
@@ -98,17 +87,11 @@ class BLPlatform(enum.StrEnum):
             BLPlatform.windows_arm64: frozenset({"ARM64"}),
         }[self]
 
-    # ------------------------------------------------------------------
-    # Naming
-    # ------------------------------------------------------------------
     @property
     def zip_suffix(self) -> str:
         """Suffix Blender uses in split-platform zip filenames (``linux_x64``)."""
         return self.value.replace("-", "_")
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
     @classmethod
     def parse(cls, value: str) -> BLPlatform:
         try:
@@ -121,7 +104,7 @@ class BLPlatform(enum.StrEnum):
 
     @classmethod
     def detect(cls) -> BLPlatform:
-        """Detect the platform this process is running on."""
+        """The platform this process is running on."""
         system = _platform.system().lower()
         machine = _platform.machine().lower()
         is_arm = machine.startswith(("aarch64", "arm"))

@@ -13,7 +13,7 @@ from .exceptions import BlenderError, BuildError, ConfigurationError, Dependency
 from .extyp import BLManifest, BLPlatform
 from .pack import pack_extension
 from .pydeps import LockFile, Resolution, Wheel
-from .pydeps.download import download_wheels
+from .pydeps.download import FinishCallback, ProgressCallback, download_wheels
 from .spec import ExtensionSpec
 
 DEFAULT_WHEELS_DIRNAME = ".extbpy/wheels"
@@ -24,12 +24,11 @@ class BuildTarget:
     """One zip to produce: a platform, or ``None`` for a universal build."""
 
     platform: BLPlatform | None
-    platforms: tuple[BLPlatform, ...]
     wheels: tuple[Wheel, ...]
 
     def manifest(self, spec: ExtensionSpec) -> BLManifest:
         return spec.manifest(
-            platforms=self.platforms if self.platform is not None else None,
+            platforms=(self.platform,) if self.platform is not None else None,
             wheels=tuple(f"./wheels/{w.filename}" for w in self.wheels) or None,
         )
 
@@ -40,12 +39,10 @@ class BuildResult:
     zip_path: Path
 
 
-# ----------------------------------------------------------------------
-# Resolution
-# ----------------------------------------------------------------------
 def resolve_all(
     spec: ExtensionSpec, lock: LockFile, platforms: tuple[BLPlatform, ...]
 ) -> dict[BLPlatform, Resolution]:
+    """Resolve every platform, failing with one combined report if any wheel is missing."""
     resolutions = {
         p: lock.resolve(
             p,
@@ -72,25 +69,23 @@ def plan_targets(
     spec: ExtensionSpec, resolutions: dict[BLPlatform, Resolution]
 ) -> list[BuildTarget]:
     """One target per platform, collapsed to a single universal target when possible."""
-    platforms = tuple(resolutions)
     wheel_sets = [frozenset(r.wheels.values()) for r in resolutions.values()]
     all_universal = all(w.is_universal for ws in wheel_sets for w in ws)
-    if all_universal and all(ws == wheel_sets[0] for ws in wheel_sets):
-        platforms_full = tuple(sorted(spec.release.platforms))
-        if set(platforms) == set(platforms_full):
-            return [BuildTarget(None, platforms, _sorted(wheel_sets[0]))]
+    if (
+        all_universal
+        and all(ws == wheel_sets[0] for ws in wheel_sets)
+        and set(resolutions) == spec.release.platforms
+    ):
+        return [BuildTarget(None, _by_filename(wheel_sets[0]))]
     return [
-        BuildTarget(p, (p,), _sorted(r.wheels.values())) for p, r in resolutions.items()
+        BuildTarget(p, _by_filename(r.wheels.values())) for p, r in resolutions.items()
     ]
 
 
-def _sorted(wheels: Iterable[Wheel]) -> tuple[Wheel, ...]:
+def _by_filename(wheels: Iterable[Wheel]) -> tuple[Wheel, ...]:
     return tuple(sorted(wheels, key=lambda w: w.filename))
 
 
-# ----------------------------------------------------------------------
-# Checks
-# ----------------------------------------------------------------------
 def check_required_files(spec: ExtensionSpec) -> None:
     missing = [f for f in spec.required_files if not (spec.source_dir / f).exists()]
     if missing:
@@ -111,6 +106,7 @@ def check_lock_current(spec: ExtensionSpec, uv_exe: str) -> None:
         cwd=spec.source_dir,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ConfigurationError(
@@ -119,9 +115,7 @@ def check_lock_current(spec: ExtensionSpec, uv_exe: str) -> None:
         )
 
 
-def find_blender(explicit: str | None = None) -> str | None:
-    if explicit:
-        return explicit
+def find_blender() -> str | None:
     for candidate in (os.environ.get("BLENDER"), shutil.which("blender")):
         if candidate:
             return candidate
@@ -136,6 +130,7 @@ def validate_with_blender(blender_exe: str, zip_path: Path) -> None:
         [blender_exe, "--command", "extension", "validate", str(zip_path)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise BlenderError(
@@ -143,17 +138,14 @@ def validate_with_blender(blender_exe: str, zip_path: Path) -> None:
         )
 
 
-# ----------------------------------------------------------------------
-# Build
-# ----------------------------------------------------------------------
 def build(
     spec: ExtensionSpec,
     *,
     platforms: tuple[BLPlatform, ...],
     output_dir: Path,
     wheels_dir: Path,
-    on_download_progress: Callable[[Wheel, int], None] | None = None,
-    on_download_finish: Callable[[Wheel, Path], None] | None = None,
+    on_download_progress: ProgressCallback | None = None,
+    on_download_finish: FinishCallback | None = None,
     on_status: Callable[[str], None] = lambda _: None,
 ) -> list[BuildResult]:
     check_required_files(spec)
