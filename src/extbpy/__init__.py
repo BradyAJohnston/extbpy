@@ -1,7 +1,3 @@
-"""
-extbpy - A minimal CLI tool for building Blender extensions with Python dependencies.
-"""
+"""extbpy - build Blender extensions from a uv project."""
 
-__version__ = "0.2.0"
-__author__ = "extbpy contributors"
-__description__ = "Minimal Blender extension builder"
+__version__ = "0.3.0"

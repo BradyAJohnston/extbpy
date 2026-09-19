@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-19
+
+### Changed
+- Rewritten around a `pyproject.toml`-driven extension specification. `blender_manifest.toml` is now generated at build time from `[project]` and `[tool.extbpy]`; a hand-written manifest in the package is ignored.
+- Wheel selection is tag-based: interpreter, ABI and platform tags, glibc and macOS floors, and PEP 508 markers are all evaluated per target platform. One best wheel is chosen per package and platform.
+- Zips are written by extbpy itself, so Blender is no longer required to build. When Blender is available the zips are validated with `blender --command extension validate`.
+- Downloads are hash-verified and cached in `.extbpy/wheels`.
+- `uv.lock` is checked against `pyproject.toml` before building.
+
+### Added
+- `extbpy manifest` prints the generated manifest.
+- `[tool.extbpy]` keys: `pretty_name`, `tagline`, `blender_version_min/max`, `tags`, `copyright`, `permissions`, `exclude_packages`, `extras`, `min_glibc_version`, `min_macos_version`, `paths_exclude_pattern`, `required_files`, `package_dir`.
+- Support for `linux-arm64` and `windows-arm64`.
+
+### Removed
+- `extbpy download-urls`, the pip fallback, and the `--extension-path` option (use `--package-dir` or `tool.extbpy.package_dir`).
+
 ## [0.2.0] - 2026-01-16
 
 ### Added

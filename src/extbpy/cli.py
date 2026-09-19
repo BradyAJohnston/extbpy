@@ -1,470 +1,362 @@
-"""
-CLI interface for extbpy - Blender Extension Builder.
-"""
+"""Command-line interface for extbpy."""
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.traceback import install
-import logging
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TaskID,
+    TextColumn,
+    TransferSpeedColumn,
+)
+from rich.table import Table
 
-from . import __version__
-from .builder import ExtensionBuilder
+from . import __version__, build as build_mod
 from .exceptions import ExtbpyError
-
-install(show_locals=True)
+from .extyp import BLPlatform
+from .pydeps import LockFile
+from .pydeps.download import download_wheels
+from .spec import ExtensionSpec
 
 console = Console()
+err_console = Console(stderr=True)
+logger = logging.getLogger("extbpy")
 
 
-def setup_logging(verbose: bool = False) -> None:
-    """Setup rich logging with appropriate level."""
-    level = logging.DEBUG if verbose else logging.INFO
+def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
-        level=level,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandler(console=console, rich_tracebacks=True)],
+        handlers=[RichHandler(console=err_console, show_path=False, show_time=False)],
     )
 
 
-@click.group(invoke_without_command=True)
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-@click.option("--version", is_flag=True, help="Show version and exit")
-@click.pass_context
-def cli(ctx: click.Context, verbose: bool, version: bool) -> None:
-    """
-    extbpy - Build Blender extensions with Python dependencies
+def _fail(message: str) -> None:
+    err_console.print(f"[bold red]error:[/bold red] {message}")
+    sys.exit(1)
 
-    A minimal tool for building Blender extensions that include Python packages
-    as wheels, with cross-platform support and intelligent dependency management.
-    """
-    setup_logging(verbose)
 
-    if version:
-        console.print(
-            f"[bold blue]extbpy[/bold blue] version [bold green]{__version__}[/bold green]"
+# ----------------------------------------------------------------------
+# Shared options
+# ----------------------------------------------------------------------
+def _common_options(f):  # type: ignore[no-untyped-def]
+    f = click.option(
+        "-s",
+        "--source-dir",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=".",
+        show_default=True,
+        help="Project directory containing pyproject.toml and uv.lock.",
+    )(f)
+    f = click.option(
+        "--package-dir",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=None,
+        help="Extension package directory (defaults to <source-dir>/<id> or src/<id>).",
+    )(f)
+    return f
+
+
+def _platform_option(f):  # type: ignore[no-untyped-def]
+    return click.option(
+        "-p",
+        "--platform",
+        "platforms",
+        multiple=True,
+        help="Target platform(s). Repeatable. 'all' = configured platforms, "
+        "'current' = this machine. Default: configured platforms.",
+    )(f)
+
+
+def _wheels_dir_option(f):  # type: ignore[no-untyped-def]
+    return click.option(
+        "--wheels-dir",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=None,
+        help=f"Wheel cache directory. Default: <source-dir>/{build_mod.DEFAULT_WHEELS_DIRNAME}",
+    )(f)
+
+
+def _load_spec(source_dir: Path, package_dir: Path | None) -> ExtensionSpec:
+    return ExtensionSpec.from_pyproject(source_dir, package_dir=package_dir)
+
+
+def _select_platforms(
+    spec: ExtensionSpec, requested: tuple[str, ...]
+) -> tuple[BLPlatform, ...]:
+    if not requested or "all" in requested:
+        return spec.platforms
+    selected: list[BLPlatform] = []
+    for value in requested:
+        p = BLPlatform.detect() if value == "current" else BLPlatform.parse(value)
+        if p not in spec.platforms:
+            configured = ", ".join(x.value for x in spec.platforms)
+            _fail(f"{p} is not in tool.extbpy.platforms ({configured})")
+        if p not in selected:
+            selected.append(p)
+    return tuple(selected)
+
+
+def _wheels_dir(spec: ExtensionSpec, override: Path | None) -> Path:
+    return (override or spec.source_dir / build_mod.DEFAULT_WHEELS_DIRNAME).resolve()
+
+
+class _DownloadUI:
+    """Rich progress bars driven by the download callbacks."""
+
+    def __init__(self) -> None:
+        self.progress = Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            console=console,
+            transient=True,
         )
-        sys.exit(0)
+        self.tasks: dict[str, TaskID] = {}
 
-    if ctx.invoked_subcommand is None:
-        console.print(ctx.get_help())
+    def __enter__(self) -> _DownloadUI:
+        self.progress.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.progress.__exit__(*exc)  # type: ignore[arg-type]
+
+    def on_progress(self, wheel, nbytes: int) -> None:  # type: ignore[no-untyped-def]
+        task = self.tasks.get(wheel.filename)
+        if task is None:
+            task = self.progress.add_task(wheel.filename, total=wheel.size)
+            self.tasks[wheel.filename] = task
+        self.progress.update(task, advance=nbytes)
+
+    def on_finish(self, wheel, path: Path) -> None:  # type: ignore[no-untyped-def]
+        task = self.tasks.pop(wheel.filename, None)
+        if task is not None:
+            self.progress.remove_task(task)
+        console.print(f"  downloaded {wheel.filename}")
+
+
+# ----------------------------------------------------------------------
+# Commands
+# ----------------------------------------------------------------------
+@click.group()
+@click.version_option(__version__, prog_name="extbpy")
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+def cli(verbose: bool) -> None:
+    """Build Blender extensions from a uv project."""
+    _setup_logging(verbose)
 
 
 @cli.command()
+@_common_options
+@_platform_option
+@_wheels_dir_option
 @click.option(
-    "--source-dir",
-    "-s",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path.cwd(),
-    help="Source directory containing extension files",
-)
-@click.option(
-    "--output-dir",
     "-o",
-    type=click.Path(path_type=Path),
-    default=Path.cwd(),
-    help="Output directory for built extensions",
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=".",
+    show_default=True,
+    help="Where to write the extension zip(s).",
 )
 @click.option(
-    "--platform",
-    "-p",
-    multiple=True,
-    type=click.Choice(["windows-x64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "all"]),
-    help='Target platforms (can be specified multiple times). Use "all" for all supported platforms',
+    "--blender",
+    type=str,
+    default=None,
+    help="Blender executable used to validate the zips.",
 )
+@click.option("--no-check", is_flag=True, help="Skip validating the zips with Blender.")
 @click.option(
-    "--python-version", default="3.11", help="Python version for dependency resolution"
-)
-@click.option(
-    "--clean/--no-clean", default=True, help="Clean wheel directory before downloading"
-)
-@click.option(
-    "--split-platforms/--no-split-platforms",
-    default=True,
-    help="Create separate builds for each platform",
-)
-@click.option(
-    "--exclude-package",
-    multiple=True,
-    help="Exclude specific packages from wheels (can be specified multiple times)",
-)
-@click.option(
-    "--ignore-platform-errors/--fail-on-platform-errors",
-    default=True,
-    help="Continue building even if some platforms fail (default: true)",
-)
-@click.option(
-    "--wheel-url",
-    multiple=True,
-    help="Additional wheel URLs to download (can be specified multiple times)",
-)
-@click.option(
-    "--extension-path",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="Custom paths to search for extension directories (can be specified multiple times)",
+    "--skip-lock-check",
+    is_flag=True,
+    help="Do not verify uv.lock matches pyproject.toml.",
 )
 def build(
     source_dir: Path,
+    package_dir: Path | None,
+    platforms: tuple[str, ...],
+    wheels_dir: Path | None,
     output_dir: Path,
-    platform: list[str],
-    python_version: str,
-    clean: bool,
-    split_platforms: bool,
-    exclude_package: list[str],
-    ignore_platform_errors: bool,
-    wheel_url: list[str],
-    extension_path: list[Path],
+    blender: str | None,
+    no_check: bool,
+    skip_lock_check: bool,
 ) -> None:
-    """
-    Build a Blender extension with Python dependencies
-
-    Downloads Python wheels for specified platforms and builds the extension.
-    If no platforms are specified, builds for the current platform.
-    Use "--platform all" to build for all supported platforms.
-    """
+    """Resolve, download and pack the extension for each platform."""
     try:
-        builder = ExtensionBuilder(
-            source_dir=source_dir,
-            output_dir=output_dir,
-            python_version=python_version,
-            excluded_packages=set(exclude_package),
-            custom_extension_paths=list(extension_path) if extension_path else None,
-        )
+        spec = _load_spec(source_dir, package_dir)
+        selected = _select_platforms(spec, platforms)
 
-        # Handle platform selection
-        if "all" in platform:
-            if len(platform) > 1:
-                console.print(
-                    "[yellow]Warning: 'all' specified with other platforms. Using configured platforms.[/yellow]"
-                )
-            configured_platforms = builder.get_configured_platforms()
-            if configured_platforms:
-                console.print(
-                    f"[blue]Building for configured platforms: {', '.join(configured_platforms)}[/blue]"
-                )
-                platform = configured_platforms
+        if not skip_lock_check:
+            uv_exe = build_mod.find_uv()
+            if uv_exe is None:
+                logger.warning("uv not found; skipping the uv.lock freshness check")
             else:
-                console.print(
-                    "[blue]No platforms configured, using all supported platforms...[/blue]"
-                )
-                platform = ["windows-x64", "linux-x64", "macos-arm64", "macos-x64"]
-        elif not platform:
-            configured_platforms = builder.get_configured_platforms()
-            if configured_platforms:
-                console.print(
-                    f"[blue]Using configured platforms: {', '.join(configured_platforms)}[/blue]"
-                )
-                platform = configured_platforms
-            else:
-                console.print(
-                    "[yellow]No platforms configured, detecting current platform...[/yellow]"
-                )
-                platform = builder.detect_current_platform()
-        else:
-            # Validate specified platforms
-            valid_platforms = {"windows-x64", "linux-x64", "macos-arm64", "macos-x64"}
-            invalid_platforms = [p for p in platform if p not in valid_platforms]
-            if invalid_platforms:
-                console.print(
-                    f"[bold red] Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
-                )
-                console.print(
-                    f"Valid platforms are: {', '.join(sorted(valid_platforms))}"
-                )
-                sys.exit(1)
+                build_mod.check_lock_current(spec, uv_exe)
 
-        additional_wheel_urls = list(wheel_url) if wheel_url else None
-        builder.build(
-            platforms=platform,
-            clean=clean,
-            split_platforms=split_platforms,
-            ignore_platform_errors=ignore_platform_errors,
-            additional_urls=additional_wheel_urls,
+        console.print(
+            f"[bold]{spec.name}[/bold] {spec.version} for Blender {spec.release.pretty_version}+ "
+            f"({', '.join(p.value for p in selected)})"
         )
+        with _DownloadUI() as ui:
+            results = build_mod.build(
+                spec,
+                platforms=selected,
+                output_dir=output_dir.resolve(),
+                wheels_dir=_wheels_dir(spec, wheels_dir),
+                on_download_progress=ui.on_progress,
+                on_download_finish=ui.on_finish,
+                on_status=lambda msg: console.print(msg),
+            )
 
-        console.print("[bold green]Build completed successfully![/bold green]")
+        blender_exe = None if no_check else build_mod.find_blender(blender)
+        if not no_check and blender_exe is None:
+            logger.info(
+                "Blender not found; skipping `blender --command extension validate`"
+            )
 
+        console.print()
+        for r in results:
+            size_mb = r.zip_path.stat().st_size / 1e6
+            if blender_exe is not None:
+                build_mod.validate_with_blender(blender_exe, r.zip_path)
+                status = "[green]validated[/green]"
+            else:
+                status = "built"
+            console.print(
+                f"  {status} {r.zip_path} ({size_mb:.1f} MB, {len(r.target.wheels)} wheels)"
+            )
     except ExtbpyError as e:
-        console.print(f"[bold red]Build failed:[/bold red] {e}")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[bold red]Unexpected error:[/bold red] {e}")
-        if logging.getLogger().level <= logging.DEBUG:
-            console.print_exception()
-        sys.exit(1)
+        _fail(str(e))
 
 
 @cli.command()
-@click.option(
-    "--source-dir",
-    "-s",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path.cwd(),
-    help="Source directory to clean",
-)
-@click.option(
-    "--pattern",
-    "-p",
-    multiple=True,
-    default=[".blend1", ".MNSession"],
-    help="File patterns to clean (can be specified multiple times)",
-)
-@click.option(
-    "--extension-path",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="Custom paths to search for extension directories (can be specified multiple times)",
-)
-def clean(source_dir: Path, pattern: list[str], extension_path: list[Path]) -> None:
-    """
-    Clean temporary files from extension directory
-
-    Removes temporary files like .blend1 and .MNSession files.
-    """
-    try:
-        builder = ExtensionBuilder(
-            source_dir=source_dir,
-            custom_extension_paths=list(extension_path) if extension_path else None,
-        )
-        cleaned_count = builder.clean_files(patterns=pattern)
-
-        if cleaned_count > 0:
-            console.print(f"[bold green]Cleaned {cleaned_count} files[/bold green]")
-        else:
-            console.print("[yellow]No files to clean[/yellow]")
-
-    except ExtbpyError as e:
-        console.print(f"[bold red]Clean failed:[/bold red] {e}")
-        sys.exit(1)
-
-
-@cli.command()
-@click.option(
-    "--source-dir",
-    "-s",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path.cwd(),
-    help="Source directory containing pyproject.toml",
-)
-@click.option(
-    "--platform",
-    "-p",
-    multiple=True,
-    type=click.Choice(["windows-x64", "linux-x64", "macos-arm64", "macos-x64", "all"]),
-    help='Target platforms (can be specified multiple times). Use "all" for all supported platforms',
-)
-@click.option(
-    "--python-version", default="3.11", help="Python version for dependency resolution"
-)
-@click.option(
-    "--clean/--no-clean", default=True, help="Clean wheel directory before downloading"
-)
-@click.option(
-    "--wheel-url",
-    multiple=True,
-    help="Additional wheel URLs to download (can be specified multiple times)",
-)
-@click.option(
-    "--extension-path",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="Custom paths to search for extension directories (can be specified multiple times)",
-)
+@_common_options
+@_platform_option
+@_wheels_dir_option
 def download(
     source_dir: Path,
-    platform: list[str],
-    python_version: str,
-    clean: bool,
-    wheel_url: list[str],
-    extension_path: list[Path],
+    package_dir: Path | None,
+    platforms: tuple[str, ...],
+    wheels_dir: Path | None,
 ) -> None:
-    """
-    Download Python wheels for specified platforms
-
-    Downloads wheels without building the extension.
-    """
+    """Download the wheels for the selected platforms into the cache."""
     try:
-        builder = ExtensionBuilder(
-            source_dir=source_dir, 
-            python_version=python_version,
-            custom_extension_paths=list(extension_path) if extension_path else None,
-        )
-
-        # Handle platform selection
-        if "all" in platform:
-            if len(platform) > 1:
-                console.print(
-                    "[yellow]Warning: 'all' specified with other platforms. Using configured platforms.[/yellow]"
-                )
-            configured_platforms = builder.get_configured_platforms()
-            if configured_platforms:
-                console.print(
-                    f"[blue]Downloading wheels for configured platforms: {', '.join(configured_platforms)}[/blue]"
-                )
-                platform = configured_platforms
-            else:
-                console.print(
-                    "[blue]No platforms configured, using all supported platforms...[/blue]"
-                )
-                platform = ["windows-x64", "linux-x64", "macos-arm64", "macos-x64"]
-        elif not platform:
-            configured_platforms = builder.get_configured_platforms()
-            if configured_platforms:
-                console.print(
-                    f"[blue]Using configured platforms: {', '.join(configured_platforms)}[/blue]"
-                )
-                platform = configured_platforms
-            else:
-                console.print(
-                    "[yellow]No platforms configured, detecting current platform...[/yellow]"
-                )
-                platform = builder.detect_current_platform()
-        else:
-            # Validate specified platforms
-            valid_platforms = {"windows-x64", "linux-x64", "macos-arm64", "macos-x64"}
-            invalid_platforms = [p for p in platform if p not in valid_platforms]
-            if invalid_platforms:
-                console.print(
-                    f"[bold red] Invalid platforms:[/bold red] {', '.join(invalid_platforms)}"
-                )
-                console.print(
-                    f"Valid platforms are: {', '.join(sorted(valid_platforms))}"
-                )
-                sys.exit(1)
-
-        additional_wheel_urls = list(wheel_url) if wheel_url else None
-        builder.download_wheels(
-            platforms=platform,
-            clean=clean,
-            additional_urls=additional_wheel_urls,
-        )
-        console.print("[bold green]Wheels downloaded successfully![/bold green]")
-
+        spec = _load_spec(source_dir, package_dir)
+        selected = _select_platforms(spec, platforms)
+        lock = LockFile.load(spec.uv_lock_path, spec.id)
+        resolutions = build_mod.resolve_all(spec, lock, selected)
+        needed = {w for r in resolutions.values() for w in r.wheels.values()}
+        target = _wheels_dir(spec, wheels_dir)
+        with _DownloadUI() as ui:
+            download_wheels(
+                needed, target, on_progress=ui.on_progress, on_finish=ui.on_finish
+            )
+        console.print(f"{len(needed)} wheel(s) available in {target}")
     except ExtbpyError as e:
-        console.print(f"[bold red]Download failed:[/bold red] {e}")
-        sys.exit(1)
+        _fail(str(e))
 
 
 @cli.command()
+@_common_options
 @click.option(
-    "--source-dir",
-    "-s",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path.cwd(),
-    help="Source directory containing extension",
+    "-p",
+    "--platform",
+    "platform",
+    default=None,
+    help="Platform whose manifest to show.",
 )
-@click.option(
-    "--url",
-    "-u",
-    multiple=True,
-    required=True,
-    help="Wheel URLs to download (can be specified multiple times)",
-)
-@click.option(
-    "--clean/--no-clean", default=True, help="Clean wheel directory before downloading"
-)
-@click.option(
-    "--extension-path",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="Custom paths to search for extension directories (can be specified multiple times)",
-)
-def download_urls(source_dir: Path, url: list[str], clean: bool, extension_path: list[Path]) -> None:
-    """
-    Download wheels from specific URLs
-
-    Downloads wheels directly from provided URLs without platform resolution.
-    """
+def manifest(source_dir: Path, package_dir: Path | None, platform: str | None) -> None:
+    """Print the blender_manifest.toml that would be generated."""
     try:
-        builder = ExtensionBuilder(
-            source_dir=source_dir,
-            custom_extension_paths=list(extension_path) if extension_path else None,
-        )
-
-        # Create wheels directory
-        builder.wheels_dir.mkdir(parents=True, exist_ok=True)
-
-        if clean:
-            builder._clean_wheels_dir()
-
-        console.print(f"[blue]Downloading {len(url)} wheels from URLs...[/blue]")
-
-        # Download all URLs (treat as universal)
-        builder._download_wheels_multithreaded(list(url), "universal")
-
-        console.print("[bold green]Wheels downloaded successfully![/bold green]")
-
+        spec = _load_spec(source_dir, package_dir)
+        selected = _select_platforms(spec, (platform,) if platform else ())
+        lock = LockFile.load(spec.uv_lock_path, spec.id)
+        resolutions = build_mod.resolve_all(spec, lock, selected)
+        targets = build_mod.plan_targets(spec, resolutions)
+        if platform is not None:
+            targets = [
+                t for t in targets if t.platform is None or t.platform.value == platform
+            ]
+        for i, target in enumerate(targets):
+            if i:
+                console.print()
+            if len(targets) > 1:
+                console.print(f"# {target.platform}")
+            console.print(
+                target.manifest(spec).to_toml(), end="", highlight=False, markup=False
+            )
     except ExtbpyError as e:
-        console.print(f"[bold red]Download failed:[/bold red] {e}")
-        sys.exit(1)
+        _fail(str(e))
 
 
 @cli.command()
-@click.option(
-    "--source-dir",
-    "-s",
-    type=click.Path(exists=True, path_type=Path),
-    default=Path.cwd(),
-    help="Source directory containing extension",
-)
-@click.option(
-    "--extension-path",
-    multiple=True,
-    type=click.Path(path_type=Path),
-    help="Custom paths to search for extension directories (can be specified multiple times)",
-)
-def info(source_dir: Path, extension_path: list[Path]) -> None:
-    """
-    Show information about the extension project
-
-    Displays project metadata, dependencies, and configuration.
-    """
+@_common_options
+def info(source_dir: Path, package_dir: Path | None) -> None:
+    """Show the extension specification parsed from pyproject.toml."""
     try:
-        builder = ExtensionBuilder(
-            source_dir=source_dir,
-            custom_extension_paths=list(extension_path) if extension_path else None,
-        )
-        info_data = builder.get_project_info()
-
-        console.print("[bold blue]Project Information[/bold blue]")
-        console.print(f"Name: [bold]{info_data.get('name', 'Unknown')}[/bold]")
-        console.print(f"Version: [bold]{info_data.get('version', 'Unknown')}[/bold]")
-        console.print(f"Description: {info_data.get('description', 'No description')}")
-
-        # Show configured platforms
-        configured_platforms = info_data.get("configured_platforms", [])
-        if configured_platforms:
-            console.print(
-                f"\n[bold blue]Configured Platforms ({len(configured_platforms)}):[/bold blue]"
-            )
-            for platform in configured_platforms:
-                console.print(f"  • {platform}")
-        else:
-            console.print(
-                "\n[yellow]No platforms configured (will use current platform)[/yellow]"
-            )
-
-        deps = info_data.get("dependencies", [])
-        if deps:
-            console.print(f"\n[bold blue]Dependencies ({len(deps)}):[/bold blue]")
-            for dep in deps:
-                console.print(f"  • {dep}")
-        else:
-            console.print("\n[yellow]No dependencies found[/yellow]")
-
+        spec = _load_spec(source_dir, package_dir)
     except ExtbpyError as e:
-        console.print(f"[bold red]Info failed:[/bold red] {e}")
-        sys.exit(1)
+        _fail(str(e))
+        return
+    table = Table(show_header=False, box=None)
+    table.add_row("id", spec.id)
+    table.add_row("name", spec.name)
+    table.add_row("version", spec.version)
+    table.add_row("tagline", spec.tagline)
+    table.add_row("maintainer", spec.maintainer)
+    table.add_row("license", ", ".join(spec.license))
+    table.add_row(
+        "blender",
+        f">= {spec.blender_version_min}"
+        + (f", < {spec.blender_version_max}" if spec.blender_version_max else ""),
+    )
+    table.add_row("python", ".".join(str(v) for v in spec.release.python_version))
+    table.add_row("platforms", ", ".join(p.value for p in spec.platforms))
+    table.add_row("package dir", str(spec.package_dir))
+    table.add_row("excluded", ", ".join(sorted(spec.excluded_packages)))
+    if spec.extras:
+        table.add_row("extras", ", ".join(spec.extras))
+    console.print(table)
+
+
+@cli.command()
+@_common_options
+@click.option(
+    "--pattern",
+    "patterns",
+    multiple=True,
+    default=("*.blend1", "*.MNSession"),
+    show_default=True,
+    help="Glob of files to delete inside the package directory. Repeatable.",
+)
+def clean(
+    source_dir: Path, package_dir: Path | None, patterns: tuple[str, ...]
+) -> None:
+    """Delete stray files (backup blends, sessions) from the package directory."""
+    try:
+        spec = _load_spec(source_dir, package_dir)
+    except ExtbpyError as e:
+        _fail(str(e))
+        return
+    removed = 0
+    for pattern in patterns:
+        for path in spec.package_dir.rglob(pattern):
+            if path.is_file():
+                path.unlink()
+                removed += 1
+                logger.debug("removed %s", path)
+    console.print(f"Removed {removed} file(s)")
 
 
 def main() -> None:
-    """Main entry point for the CLI."""
     cli()
 
 
