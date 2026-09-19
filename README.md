@@ -57,6 +57,7 @@ This writes `my_extension-1.0.0-<platform>.zip` for every configured platform.
 | Command | What it does |
 | --- | --- |
 | `extbpy build` | Resolve, download, pack and (if Blender is found) validate. |
+| `extbpy sync` | Write the manifest and wheels into the package for local development. |
 | `extbpy download` | Only fill the wheel cache. |
 | `extbpy manifest` | Print the generated `blender_manifest.toml`. |
 | `extbpy info` | Show the parsed extension specification. |
@@ -68,7 +69,22 @@ Useful `build` options:
 - `-o/--output-dir` chooses where zips go (default: current directory).
 - `--wheels-dir` overrides the cache (default: `<project>/.extbpy/wheels`, add it to `.gitignore`).
 - `--blender PATH` / `--no-check` control validation with Blender.
+- `--no-sync` skips writing the local manifest and wheels into the package.
 - `--skip-lock-check` skips verifying that `uv.lock` matches `pyproject.toml`.
+
+## Local development
+
+Blender loads an extension from a source directory only if that directory
+holds `blender_manifest.toml` and the wheels it lists. `extbpy sync` (also run
+at the end of `extbpy build`) writes both into the package for this machine's
+platform, hard-linking wheels from the cache. Point Blender or the Blender VS
+Code extension at the package directory and iterate. Add these to `.gitignore`:
+
+```
+.extbpy/
+my_extension/blender_manifest.toml
+my_extension/wheels/
+```
 
 ## `[tool.extbpy]` reference
 
